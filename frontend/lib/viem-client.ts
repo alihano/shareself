@@ -11,10 +11,13 @@ export const publicClient = createPublicClient({
   // no single instance is issuing overlapping requests. Retrying here is
   // what absorbs those cross-instance collisions instead of failing the
   // request outright.
-  // retryDelay is short on purpose: a live test against Arc's RPC showed a
-  // rate-limited call succeeds again immediately on the very next attempt,
-  // so a long fixed delay here mostly just adds dead time across the many
-  // sequential chunked calls a single page load can trigger, without
-  // buying extra reliability.
-  transport: http(undefined, { retryCount: 6, retryDelay: 500 }),
+  // Tried shortening retryDelay to 500ms to speed up the cold (cache-miss)
+  // scan — measured directly against the live deployment, it backfired: the
+  // retries fired too close together for Arc's rate limiter to recover
+  // between attempts, so the request failed outright (500) instead of
+  // eventually succeeding. 1500ms reliably completes (measured ~230s cold).
+  // Since the Redis cache (server-cache.ts, 180s TTL) means this expensive
+  // path only runs occasionally, reliability here matters more than shaving
+  // those seconds.
+  transport: http(undefined, { retryCount: 6, retryDelay: 1500 }),
 });
