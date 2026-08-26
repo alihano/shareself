@@ -72,12 +72,24 @@ function mark(stateKey: string, label: string, t0: number) {
   console.log(`[scan:${stateKey}] ${label} +${Date.now() - t0}ms`);
 }
 
+// Diagnostic logs pointed at a very specific symptom: 6 of 7 scans returned
+// in single-digit milliseconds ("no new blocks"), but the one scan whose
+// cached lastBlock was genuinely behind the chain tip hung indefinitely
+// trying to fetch that (tiny) delta — no error, no retry log, just silence
+// for minutes. That matches known flakiness in some RPC backends querying a
+// range that includes the last few not-yet-fully-propagated blocks. Staying
+// a small safety margin behind the tip avoids ever querying that bleeding
+// edge; those last few blocks just get picked up on the next call once
+// they're no longer the newest.
+const SAFETY_MARGIN_BLOCKS = 5n;
+
 async function scanEventsIncremental(
   stateKey: string,
   params: Omit<Parameters<typeof publicClient.getContractEvents>[0], "fromBlock" | "toBlock" | "blockHash">
 ): Promise<Log[]> {
   const t0 = Date.now();
-  const latest = await publicClient.getBlockNumber();
+  const chainTip = await publicClient.getBlockNumber();
+  const latest = chainTip > SAFETY_MARGIN_BLOCKS ? chainTip - SAFETY_MARGIN_BLOCKS : chainTip;
   mark(stateKey, "getBlockNumber done", t0);
 
   let lastBlock = DEPLOY_BLOCK - 1n;
