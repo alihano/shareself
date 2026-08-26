@@ -67,17 +67,25 @@ interface ScanState {
   logs: Log[];
 }
 
+// TEMP diagnostic timing — remove once the latency source is confirmed.
+function mark(stateKey: string, label: string, t0: number) {
+  console.log(`[scan:${stateKey}] ${label} +${Date.now() - t0}ms`);
+}
+
 async function scanEventsIncremental(
   stateKey: string,
   params: Omit<Parameters<typeof publicClient.getContractEvents>[0], "fromBlock" | "toBlock" | "blockHash">
 ): Promise<Log[]> {
+  const t0 = Date.now();
   const latest = await publicClient.getBlockNumber();
+  mark(stateKey, "getBlockNumber done", t0);
 
   let lastBlock = DEPLOY_BLOCK - 1n;
   let logs: Log[] = [];
 
   if (redis) {
     const raw = await withTimeout(redis.get(stateKey), 3_000);
+    mark(stateKey, "redis.get done", t0);
     if (raw) {
       const state = JSON.parse(raw, jsonReviver) as ScanState;
       lastBlock = BigInt(state.lastBlock);
@@ -85,13 +93,19 @@ async function scanEventsIncremental(
     }
   }
 
-  if (latest <= lastBlock) return logs;
+  if (latest <= lastBlock) {
+    mark(stateKey, `no new blocks, returning ${logs.length} cached logs`, t0);
+    return logs;
+  }
 
   const newLogs: Log[] = [];
+  let chunkCount = 0;
   for (let start = lastBlock + 1n; start <= latest; start += MAX_BLOCK_RANGE + 1n) {
     const end = start + MAX_BLOCK_RANGE < latest ? start + MAX_BLOCK_RANGE : latest;
     const chunk = await throttledRpc(() => publicClient.getContractEvents({ ...params, fromBlock: start, toBlock: end }));
     newLogs.push(...chunk);
+    chunkCount++;
+    mark(stateKey, `chunk ${chunkCount} done (${start}-${end}, ${chunk.length} logs)`, t0);
   }
 
   const allLogs = [...logs, ...newLogs];
@@ -99,8 +113,10 @@ async function scanEventsIncremental(
   if (redis) {
     const state: ScanState = { lastBlock: latest.toString(), logs: allLogs };
     await withTimeout(redis.set(stateKey, JSON.stringify(state, jsonReplacer), "EX", STATE_TTL_SECONDS), 5_000);
+    mark(stateKey, "redis.set done", t0);
   }
 
+  mark(stateKey, `TOTAL done, ${chunkCount} chunks, ${allLogs.length} logs`, t0);
   return allLogs;
 }
 
@@ -164,8 +180,11 @@ export async function getTokenStatsFast(token: Address): Promise<TokenStats> {
 }
 
 export async function getLeaderboardFast(): Promise<LeaderboardEntry[]> {
+  const t0 = Date.now();
   const users = await getAllRegisteredUsersFast();
+  console.log(`[leaderboard] got ${users.length} users +${Date.now() - t0}ms`);
   const stats = await Promise.all(users.map((u) => getTokenStatsFast(u.token)));
+  console.log(`[leaderboard] TOTAL done +${Date.now() - t0}ms`);
   return users.map((user, i) => ({ ...user, stats: stats[i] }));
 }
 
