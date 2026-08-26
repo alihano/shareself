@@ -64,8 +64,8 @@ export default function RegisterPage() {
     <div className="mx-auto flex max-w-md flex-col gap-4 py-12">
       <h1 className="text-2xl font-bold text-foreground">Register your profile</h1>
       <p className="text-sm text-muted">
-        Connect your wallet and sign in with X — your X handle becomes your on-chain username. 10% of the initial
-        share supply is minted to you.
+        Connect your wallet and sign in with X — your X handle becomes your on-chain username. You can buy your own
+        shares afterward, just like anyone else.
       </p>
 
       <ChainSwitch />

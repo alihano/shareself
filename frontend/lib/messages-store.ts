@@ -82,3 +82,17 @@ export function getConversationsForUser(address: Address): ConversationSummary[]
     }))
     .sort((x, y) => y.lastMessage.timestamp - x.lastMessage.timestamp);
 }
+
+/**
+ * Content-free unread check for the navbar badge: true if someone else sent
+ * `address` a message after `since`. Deliberately reveals no text or
+ * counterpart — safe to leave unauthenticated (unlike getConversationsForUser
+ * / getConversation) so the badge never needs to prompt a wallet signature
+ * just from being mounted on every page.
+ */
+export function hasNewMessagesSince(address: Address, since: number): boolean {
+  const lower = address.toLowerCase();
+  return readAll().some(
+    (m) => m.to.toLowerCase() === lower && m.from.toLowerCase() !== lower && m.timestamp > since
+  );
+}

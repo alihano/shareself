@@ -54,7 +54,10 @@ describe("SocialFiPlatform", function () {
 
       const userToken = (await ethers.getContractAt("UserToken", token)) as unknown as UserToken;
       expect(await userToken.creator()).to.equal(alice.address);
-      expect(await userToken.balanceOf(alice.address)).to.be.gt(0n);
+      // No free starting shares (see train.md's security-review fix) — supply
+      // starts at zero, alice holds none of her own token until she buys some.
+      expect(await userToken.totalSupply()).to.equal(0n);
+      expect(await userToken.balanceOf(alice.address)).to.equal(0n);
     });
 
     it("reverts on a username that's too short or too long", async function () {
@@ -103,9 +106,9 @@ describe("SocialFiPlatform", function () {
     it("charges the buyer price + 3% fee, splits it 50/50 with the creator, and mints shares", async function () {
       const amount = 100n;
       // Recompute the expected price independently via BondingCurve's closed-form
-      // sum-of-squares (starting from the token's actual pre-buy supply, which already
-      // includes alice's 10% creator premint), so this test doesn't just restate the
-      // contract's own math back at it.
+      // sum-of-squares (starting from the token's actual pre-buy supply — zero, since
+      // there's no creator premint), so this test doesn't just restate the contract's
+      // own math back at it.
       const userToken = (await ethers.getContractAt("UserToken", token)) as unknown as UserToken;
       const supply = await userToken.totalSupply();
       const sumOfSquares = (n: bigint) => (n === 0n ? 0n : ((n - 1n) * n * (2n * n - 1n)) / 6n);
@@ -184,6 +187,37 @@ describe("SocialFiPlatform", function () {
 
       const platformUsdcBalance = await usdc.balanceOf(await platform.getAddress());
       expect(platformUsdcBalance).to.be.gte(0n);
+    });
+  });
+
+  describe("security regressions", function () {
+    it("a fresh registrant with zero USDC and zero approval cannot sell anything — no free-premint reserve drain", async function () {
+      // Regression for a critical finding from a security review (see
+      // train.md): registerUser used to premint free shares that were
+      // sellable against the platform's single pooled USDC reserve, letting
+      // anyone with 0 USDC drain funds other users had deposited for their
+      // own tokens. Fix: no free shares at all — supply starts at zero and
+      // only ever grows via a paid buyToken call.
+      await platform.connect(bob).registerUser("bobnofunds");
+      const bobToken = await platform.tokenOfUser(bob.address);
+      const bobUserToken = (await ethers.getContractAt("UserToken", bobToken)) as unknown as UserToken;
+
+      expect(await bobUserToken.totalSupply()).to.equal(0n);
+      expect(await bobUserToken.balanceOf(bob.address)).to.equal(0n);
+
+      // Even attempting to sell reverts on the underlying InsufficientSupply
+      // check (amount > supply of 0) long before any reserve funds move.
+      await expect(platform.connect(bob).sellToken(bobToken, 1, 0)).to.be.reverted;
+    });
+
+    it("registering never pulls USDC from the caller", async function () {
+      const bobUsdcBefore = await usdc.balanceOf(bob.address);
+      const platformReserveBefore = await usdc.balanceOf(await platform.getAddress());
+
+      await platform.connect(bob).registerUser("bobfree");
+
+      expect(await usdc.balanceOf(bob.address)).to.equal(bobUsdcBefore);
+      expect(await usdc.balanceOf(await platform.getAddress())).to.equal(platformReserveBefore);
     });
   });
 

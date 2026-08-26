@@ -23,14 +23,16 @@ contract UserToken is ERC20, Ownable {
     /// @param _creator Wallet address of the registering user.
     /// @param _platform SocialFiPlatform address; becomes `owner` and the sole
     ///        mint/burn caller.
-    /// @param initialSupply Reference supply used only to size the creator's
-    ///        registration premint (10% of it, per train.md); it is not itself
-    ///        minted as circulating supply beyond that 10%.
+    /// @dev No creator premint: an earlier version minted free starting shares to the
+    ///      creator, but those shares had no USDC backing while still being sellable
+    ///      against SocialFiPlatform's single pooled reserve — a zero-capital drain of
+    ///      other users' deposits (found in a security review, see train.md). Supply now
+    ///      starts at zero and only ever grows via SocialFiPlatform.buyToken, which is
+    ///      always paid, so every unit of supply is always reserve-backed.
     constructor(
         string memory _username,
         address _creator,
-        address _platform,
-        uint256 initialSupply
+        address _platform
     )
         ERC20(string.concat(_username, " Shares"), string.concat("S-", _username))
         Ownable(_platform)
@@ -42,10 +44,6 @@ contract UserToken is ERC20, Ownable {
 
         username = _username;
         creator = _creator;
-
-        if (initialSupply > 0) {
-            _mint(_creator, initialSupply / 10);
-        }
     }
 
     /// @notice Shares are whole, indivisible units (friend.tech-style) — BondingCurve

@@ -389,6 +389,89 @@ react-query key'lerini (`["conversations", address]`,
 `["notifications-token-activity", token]`) paylaşıyor — rozet için ekstra
 network isteği yok.
 
+## Güvenlik Açığı Düzeltmesi: Yetkisiz DM Okuma (security-review ile bulundu)
+`/security-review` çalıştırıldı (git yoktu, geçici bir yerel bare repo +
+boş baseline commit kurulup gerçek "pending changes" diff'i oluşturuldu).
+İki HIGH-severity, 9/10 güvenle doğrulanmış bulgu çıktı: hem
+`/api/messages/conversations/[address]` hem `/api/messages/[from]/[to]`
+route'ları **hiçbir kimlik doğrulaması yapmadan** özel mesaj içeriğini
+döndürüyordu — `hasChatAccess` sadece "bu iki adres arasında bir unlock
+var mı" diye bakıyordu, isteği KİMİN yaptığını hiç sormuyordu. Herhangi biri,
+kayıtlı kullanıcıları enumerate edip başka birinin tüm özel yazışmalarını
+okuyabilirdi.
+
+**Çözüm — cüzdan imzasıyla kimlik kanıtı:**
+- `frontend/lib/message-auth.ts`: `buildAuthMessage(address, timestamp)` +
+  `verifyCallerSignature()` (viem `recoverMessageAddress`, izomorfik —
+  network gerektirmez). İmza 10 dakika geçerli.
+- `frontend/hooks/useMessageAuthToken.ts`: `wagmi useSignMessage` ile bir kez
+  imzalatıp **modül seviyesinde** (component ref değil) adrese göre
+  önbellekliyor — aynı sekmede kaç bileşen kullanırsa kullansın tek imza
+  isteği çıkıyor, in-flight dedup ile eşzamanlı çağrılar da tek promise'i
+  paylaşıyor.
+- Düzeltilen route'lar: `messages/conversations/[address]` (artık
+  `?timestamp=&signature=` zorunlu, çağıranın gerçekten o adres olduğunu
+  kanıtlaması gerekiyor), `messages/[from]/[to]` (artık `?as=&timestamp=&
+  signature=` — `as`, `from` veya `to`'dan biri olmalı VE imzalanmalı),
+  `messages/send` (POST body'de `timestamp`/`signature` — `from` artık
+  taklit edilemiyor, security-review'ün Vuln 3 olarak işaretleyip
+  "zaten bilinen/kabul edilmiş sınırlama" diye elediği spoofing açığı da
+  bu arada kapandı).
+- **Navbar rozeti için özel çözüm**: `useUnreadMessages` (her sayfada
+  mount olan navbar'da) yukarıdaki imzalı akışı KULLANMIYOR — onu kullansaydı
+  kullanıcı siteye her girişte (Messages'a hiç girmeden) sessizce MetaMask
+  imza istemi görürdü. Bunun yerine yeni, **imza gerektirmeyen** bir route
+  eklendi: `/api/messages/unread/[address]` + `lib/messages-store.ts`'teki
+  `hasNewMessagesSince()` — sadece `{hasUnread: boolean}` döndürüyor, mesaj
+  metni ya da karşı taraf adresi asla açığa çıkmıyor, o yüzden auth'suz
+  bırakmak güvenli.
+- **Doğrulama**: gerçek bir private key ile doğru formatta imza üretilip
+  canlı dev server'a karşı test edildi — imzasız istek 401, kendi adresin
+  için geçerli imza 200 (gerçek konuşmalarını döndürüyor), aynı imzayla
+  BAŞKA bir adres iddia etmek 401, `[from]/[to]`'da taraf olmayan biri
+  `as=` ile kendini taraf gibi göstermeye çalışınca 401 — hepsi beklendiği
+  gibi çalıştı.
+
+## KRİTİK Güvenlik Açığı Düzeltmesi: Bedava Premint Reserve Drain (2. detaylı security-review)
+Kullanıcının "mainnet'e geçmeden önce detaylı incele" isteğiyle kontratlara
+saldırgan gözüyle bakan ayrı bir agent + bağımsız false-positive doğrulama
+turu çalıştırıldı (aynı yöntem: bulgu ajanı → her bulgu için ayrı doğrulama
+ajanı → sadece güven ≥8 olanlar rapora giriyor). Üç bulgu çıktı:
+
+1. **KRİTİK (9/10 doğrulandı, gerçek Hardhat PoC ile çalıştırıldı)**:
+   `registerUser` her kayıt olana **bedava** 1.000 pay (`CREATOR_PREMINT_BASIS`
+   üzerinden %10) veriyordu, ama bu paylar için hiç USDC platformnun
+   rezervine girmiyordu. `sellToken` ise ödemeyi **tek, ortak** `usdc`
+   bakiyesinden yapıyordu (her token'ın ayrı bir kasası yok). Sonuç: sıfır
+   USDC'si olan biri kayıt olup bedava payını satarak **başka kullanıcıların
+   yatırdığı parayı** çekebiliyordu (PoC'de: 0 USDC yatırıp 327.84 USDC
+   çıkardı). Sybil ile tekrarlanabilir, sonunda rezerv biter, gerçek
+   kullanıcılar kendi ödedikleri payları bile satamaz hale gelirdi.
+   **Düzeltme (kullanıcının önerisiyle — "yeni kayıt olanlara hiç token
+   vermesen olmaz mı" — bu, "creator kendi premint'ini gerçek fiyattan satın
+   alsın" alternatifinden daha temiz/sağlam çıktı)**: `UserToken`
+   constructor'ından premint mint'i tamamen kaldırıldı,
+   `SocialFiPlatform.CREATOR_PREMINT_BASIS` sabiti silindi. Artık her
+   token'ın arzı **0'dan** başlıyor ve SADECE ödemeli `buyToken` üzerinden
+   büyüyor — arkasız/bedava arz artık hiç var olamıyor, açığın kökü
+   kapandı. `test/SocialFiPlatform.test.ts`'e iki regresyon testi eklendi
+   ("security regressions" describe bloğu): sıfır USDC'li taze kayıt hiçbir
+   şey satamıyor, kayıt olmak hiçbir zaman USDC çekmiyor. 49/49 test yeşil.
+   Frontend'deki "10% of the initial share supply is minted to you" metni
+   kaldırıldı (`app/register/page.tsx`).
+2. **Yüksek (9/10 doğrulandı, matematikle yeniden türetildi)**: Sandwich/MEV
+   saldırısı — `buyToken`/`sellToken`'ın herkese açık mempool'da hiç koruması
+   yok, `maxCost`/`minReturn` sadece kişinin KENDİ slippage toleransını
+   sınırlıyor, başkasının işlemini önden/arkadan sandviçleyip kâr etmeyi
+   engellemiyor (örnekte %105 ROI, tek blokta). Bu, herkese açık mempool'lu
+   her bonding-curve/AMM'in **doğal, kod hatası olmayan** riski —
+   tamamen kapatılamaz ama frontend'de varsayılan slippage toleransını
+   sıkılaştırmak (bkz. aşağıdaki not) riski azaltıyor. Mainnet'e geçmeden
+   önce kullanıcıya açıkça bildirilmesi gereken, bilinen bir risk.
+3. **Elendi (2/10, false positive)**: Kullanıcı adı taklidi — izinsiz kayıt
+   sistemlerinin (ENS, Twitter handle'ları gibi) doğal/beklenen özelliği,
+   ayrı bir kod hatası değil.
+
 ## Genel
 - Her yeni bilgi/karar bu dosyaya veya ilgili akış/adım dosyasına eklenmeli;
   bu dosyalar projenin "hafızası"dır.

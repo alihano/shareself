@@ -4,8 +4,11 @@ import Link from "next/link";
 import { Button } from "@/components/common/Button";
 import { Avatar } from "@/components/common/Avatar";
 import { Loading } from "@/components/common/Loading";
+import { XIcon } from "@/components/common/XIcon";
 import { useLeaderboard } from "@/hooks/useLeaderboard";
 import { formatUsdc } from "@/lib/format";
+
+const X_HANDLE_URL = "https://x.com/ArcShareSelf";
 
 export default function Home() {
   const { rows, isLoading } = useLeaderboard("price");
@@ -59,6 +62,21 @@ export default function Home() {
             ))}
           </div>
         )}
+      </div>
+
+      <div className="flex items-center justify-center gap-3 pb-4">
+        <a
+          href={X_HANDLE_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-2 rounded-full border border-border bg-surface px-4 py-2 text-sm font-medium text-foreground transition-colors hover:border-accent/50 hover:text-accent"
+        >
+          <XIcon className="h-4 w-4" />
+          @ArcShareSelf
+        </a>
+        <span className="rounded-full border border-accent/30 bg-accent/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-accent">
+          Backed by Arc
+        </span>
       </div>
     </div>
   );

@@ -6,6 +6,7 @@ import axios from "axios";
 import { publicClient } from "@/lib/viem-client";
 import { DIRECT_MESSAGING_ADDRESS, USDC_ADDRESS, directMessagingAbi, erc20Abi } from "@/lib/contracts";
 import type { StoredMessage } from "@/lib/messages-store";
+import { useMessageAuthToken } from "./useMessageAuthToken";
 
 function conversationKey(a: Address, b: Address) {
   return ["messages", [a.toLowerCase(), b.toLowerCase()].sort().join(":")];
@@ -20,6 +21,7 @@ function conversationKey(a: Address, b: Address) {
 export function useMessaging(counterpart?: Address) {
   const { address: self } = useAccount();
   const { writeContractAsync } = useWriteContract();
+  const { getToken } = useMessageAuthToken();
   const queryClient = useQueryClient();
   const [isUnlocking, setIsUnlocking] = useState(false);
   const [error, setError] = useState<Error | null>(null);
@@ -60,7 +62,12 @@ export function useMessaging(counterpart?: Address) {
   const messagesQuery = useQuery({
     queryKey: self && counterpart ? conversationKey(self, counterpart) : ["messages", "disabled"],
     queryFn: async () => {
-      const res = await axios.get<StoredMessage[]>(`/api/messages/${self}/${counterpart}`);
+      if (!self) throw new Error("Wallet not connected");
+      const token = await getToken();
+      if (!token) throw new Error("Wallet not connected");
+      const res = await axios.get<StoredMessage[]>(`/api/messages/${self}/${counterpart}`, {
+        params: { as: self, timestamp: token.timestamp, signature: token.signature },
+      });
       return res.data;
     },
     enabled: Boolean(self && counterpart && hasAccess),
@@ -70,7 +77,15 @@ export function useMessaging(counterpart?: Address) {
   const sendMutation = useMutation({
     mutationFn: async (text: string) => {
       if (!self || !counterpart) throw new Error("Wallet not connected");
-      await axios.post("/api/messages/send", { from: self, to: counterpart, text });
+      const token = await getToken();
+      if (!token) throw new Error("Wallet not connected");
+      await axios.post("/api/messages/send", {
+        from: self,
+        to: counterpart,
+        text,
+        timestamp: token.timestamp,
+        signature: token.signature,
+      });
     },
     onSuccess: () => {
       if (self && counterpart) queryClient.invalidateQueries({ queryKey: conversationKey(self, counterpart) });

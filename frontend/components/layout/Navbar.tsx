@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { WalletConnect } from "@/components/wallet/WalletConnect";
 import { BalanceDisplay } from "@/components/wallet/BalanceDisplay";
+import { Logo } from "@/components/common/Logo";
 import { MessagesNavLink, NotificationsNavLink } from "./NavLinkWithBadge";
 
 const NAV_LINKS = [
@@ -13,10 +14,8 @@ export function Navbar() {
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur-md">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3">
-        <Link href="/" className="flex items-center gap-2 text-lg font-extrabold tracking-tight">
-          <span className="gradient-ring flex h-8 w-8 items-center justify-center rounded-xl text-sm text-white">
-            S
-          </span>
+        <Link href="/" className="flex items-center gap-2.5 text-lg font-extrabold tracking-tight">
+          <Logo />
           <span className="gradient-text">ShareSelf</span>
         </Link>
 

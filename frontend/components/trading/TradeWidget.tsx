@@ -14,7 +14,12 @@ import { Input } from "@/components/common/Input";
 import { ChainSwitch } from "@/components/wallet/ChainSwitch";
 import { TransactionStatus } from "./TransactionStatus";
 
-const SLIPPAGE_BPS = 200n; // 2% tolerance on top of the previewed quote
+// Tightened from 2% after a security review flagged sandwich/MEV risk on the
+// bonding curve (see train.md) — a smaller tolerance shrinks (but can't fully
+// eliminate) how much a front-runner can profit from a victim's trade. Trades
+// on volatile blocks may fail more often as a result; that's the intended
+// tradeoff.
+const SLIPPAGE_BPS = 50n; // 0.5% tolerance on top of the previewed quote
 
 interface TradeWidgetProps {
   token: Address;

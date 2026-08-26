@@ -13,8 +13,8 @@ unlock gated direct messaging with a creator.
 | | |
 |---|---|
 | Live URL | _not yet deployed (frontend not on Vercel yet)_ |
-| SocialFiPlatform | [`0x64e7274Cef17C8DFBDC7b1bA201490E190f94193`](https://testnet.arcscan.app/address/0x64e7274Cef17C8DFBDC7b1bA201490E190f94193) |
-| DirectMessaging | [`0xb714F71293c54a4f6C39F6CFd3D814179826fA67`](https://testnet.arcscan.app/address/0xb714F71293c54a4f6C39F6CFd3D814179826fA67) |
+| SocialFiPlatform | [`0x9b486A9F3055df3dD75873708A59044C1dBDb247`](https://testnet.arcscan.app/address/0x9b486A9F3055df3dD75873708A59044C1dBDb247) |
+| DirectMessaging | [`0x04c26c4B8B00750FabBCb4f1022c9abf6b52F807`](https://testnet.arcscan.app/address/0x04c26c4B8B00750FabBCb4f1022c9abf6b52F807) |
 | USDC (Arc Testnet) | [`0x3600000000000000000000000000000000000000`](https://testnet.arcscan.app/address/0x3600000000000000000000000000000000000000) — confirmed live: symbol `USDC`, 6 decimals |
 
 ## Network

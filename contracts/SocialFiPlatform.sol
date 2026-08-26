@@ -33,14 +33,6 @@ contract SocialFiPlatform is Ownable, ReentrancyGuard {
     ///      creator and the platform (see train.md's "Fee Değişiklikleri" note).
     uint256 public constant CREATOR_FEE_SHARE_BPS = 5_000; // 50%
 
-    /// @dev Reference supply passed to each UserToken for sizing the 10% creator
-    ///      premint (see UserToken.sol). Not a circulating-supply ceiling itself.
-    ///      Sized (paired with BondingCurve.CURVE_CONSTANT) so a single trade is
-    ///      a meaningful fraction of supply and visibly moves the price — see
-    ///      train.md's curve-tuning note; the original 1_000_000 made price
-    ///      swings feel too flat for typical trade sizes.
-    uint256 public constant CREATOR_PREMINT_BASIS = 10_000;
-
     IERC20 public immutable usdc;
     address public platformFeeRecipient;
 
@@ -61,8 +53,10 @@ contract SocialFiPlatform is Ownable, ReentrancyGuard {
         platformFeeRecipient = _platformFeeRecipient;
     }
 
-    /// @notice Registers `msg.sender` under `username`, deploying their UserToken and
-    ///         preminting 10% of `CREATOR_PREMINT_BASIS` to them.
+    /// @notice Registers `msg.sender` under `username`, deploying their UserToken.
+    /// @dev No free starting shares (see UserToken.sol's constructor note) — supply
+    ///      starts at zero and the creator, like anyone else, must `buyToken` to hold
+    ///      any of their own shares.
     function registerUser(string calldata username) external nonReentrant returns (address token) {
         if (tokenOfUser[msg.sender] != address(0)) revert UserAlreadyRegistered(msg.sender);
 
@@ -70,7 +64,7 @@ contract SocialFiPlatform is Ownable, ReentrancyGuard {
         if (len < 3 || len > 20) revert InvalidUsername(username);
         if (tokenOf[username] != address(0)) revert UsernameTaken(username);
 
-        UserToken newToken = new UserToken(username, msg.sender, address(this), CREATOR_PREMINT_BASIS);
+        UserToken newToken = new UserToken(username, msg.sender, address(this));
         token = address(newToken);
 
         tokenOf[username] = token;

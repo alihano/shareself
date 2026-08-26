@@ -2,10 +2,8 @@
 
 import type { Address } from "viem";
 import { useAccount } from "wagmi";
-import { useQuery } from "@tanstack/react-query";
-import axios from "axios";
 import clsx from "clsx";
-import type { ConversationSummary } from "@/lib/messages-store";
+import { useConversations } from "@/hooks/useConversations";
 import { shortenAddress, formatRelativeTime } from "@/lib/format";
 import { Loading } from "@/components/common/Loading";
 import { Avatar } from "@/components/common/Avatar";
@@ -17,13 +15,7 @@ interface ConversationListProps {
 
 export function ConversationList({ selected, onSelect }: ConversationListProps) {
   const { address } = useAccount();
-
-  const query = useQuery({
-    queryKey: ["conversations", address],
-    queryFn: async () => (await axios.get<ConversationSummary[]>(`/api/messages/conversations/${address}`)).data,
-    enabled: Boolean(address),
-    refetchInterval: 10_000,
-  });
+  const query = useConversations();
 
   if (!address) return <p className="p-4 text-sm text-muted">Connect your wallet to see messages.</p>;
   if (query.isLoading) return <Loading label="Loading conversations…" />;

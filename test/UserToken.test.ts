@@ -9,12 +9,10 @@ describe("UserToken", function () {
   let stranger: HardhatEthersSigner;
   let token: UserToken;
 
-  const PREMINT_BASIS = 1_000_000n;
-
   beforeEach(async function () {
     [owner, creator, stranger] = await ethers.getSigners();
     const factory = await ethers.getContractFactory("UserToken");
-    token = (await factory.deploy("alice", creator.address, owner.address, PREMINT_BASIS)) as unknown as UserToken;
+    token = (await factory.deploy("alice", creator.address, owner.address)) as unknown as UserToken;
   });
 
   it("sets username, creator, name and symbol", async function () {
@@ -24,9 +22,12 @@ describe("UserToken", function () {
     expect(await token.symbol()).to.equal("S-alice");
   });
 
-  it("premints 10% of the reference supply to the creator", async function () {
-    expect(await token.balanceOf(creator.address)).to.equal(PREMINT_BASIS / 10n);
-    expect(await token.totalSupply()).to.equal(PREMINT_BASIS / 10n);
+  it("starts with zero supply and no free shares for the creator", async function () {
+    // No creator premint (see train.md's security-review fix) — free,
+    // reserve-less starting shares were sellable against the platform's
+    // pooled USDC reserve, draining other users' deposits.
+    expect(await token.balanceOf(creator.address)).to.equal(0n);
+    expect(await token.totalSupply()).to.equal(0n);
   });
 
   it("sets the platform address as owner", async function () {
@@ -36,14 +37,14 @@ describe("UserToken", function () {
   it("reverts construction on a zero creator address", async function () {
     const factory = await ethers.getContractFactory("UserToken");
     await expect(
-      factory.deploy("bob", ethers.ZeroAddress, owner.address, PREMINT_BASIS)
+      factory.deploy("bob", ethers.ZeroAddress, owner.address)
     ).to.be.revertedWithCustomError(token, "ZeroAddress");
   });
 
   it("reverts construction on a zero platform address (rejected by Ownable itself)", async function () {
     const factory = await ethers.getContractFactory("UserToken");
     await expect(
-      factory.deploy("bob", creator.address, ethers.ZeroAddress, PREMINT_BASIS)
+      factory.deploy("bob", creator.address, ethers.ZeroAddress)
     ).to.be.revertedWithCustomError(token, "OwnableInvalidOwner");
   });
 
