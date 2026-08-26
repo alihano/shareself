@@ -19,7 +19,7 @@ import { throttledRpc } from "./rpc-throttle";
 // such call into fixed-size windows (still funneled through throttledRpc, one
 // at a time) so the range per request stays under the cap no matter how far
 // the chain has advanced.
-const MAX_BLOCK_RANGE = 10_000n;
+const MAX_BLOCK_RANGE = 20_000n;
 
 async function getContractEventsChunked(
   params: Omit<Parameters<typeof publicClient.getContractEvents>[0], "fromBlock" | "toBlock" | "blockHash"> & {
