@@ -110,20 +110,31 @@ async function scanEventsIncremental(
     return logs;
   }
 
+  // A chunk fetch can still fail outright (rpc-throttle.ts's hard timeout
+  // rejects rather than hanging forever) — treat that as "no progress this
+  // round" instead of failing the whole page: return whatever was already
+  // cached/fetched, without advancing lastBlock past the failure, so the
+  // next call just retries the same still-unfetched range.
   const newLogs: Log[] = [];
   let chunkCount = 0;
-  for (let start = lastBlock + 1n; start <= latest; start += MAX_BLOCK_RANGE + 1n) {
-    const end = start + MAX_BLOCK_RANGE < latest ? start + MAX_BLOCK_RANGE : latest;
-    const chunk = await throttledRpc(() => publicClient.getContractEvents({ ...params, fromBlock: start, toBlock: end }));
-    newLogs.push(...chunk);
-    chunkCount++;
-    mark(stateKey, `chunk ${chunkCount} done (${start}-${end}, ${chunk.length} logs)`, t0);
+  let reachedBlock = lastBlock;
+  try {
+    for (let start = lastBlock + 1n; start <= latest; start += MAX_BLOCK_RANGE + 1n) {
+      const end = start + MAX_BLOCK_RANGE < latest ? start + MAX_BLOCK_RANGE : latest;
+      const chunk = await throttledRpc(() => publicClient.getContractEvents({ ...params, fromBlock: start, toBlock: end }));
+      newLogs.push(...chunk);
+      chunkCount++;
+      reachedBlock = end;
+      mark(stateKey, `chunk ${chunkCount} done (${start}-${end}, ${chunk.length} logs)`, t0);
+    }
+  } catch (error) {
+    mark(stateKey, `chunk fetch failed after ${chunkCount} chunks, using partial progress: ${error}`, t0);
   }
 
   const allLogs = [...logs, ...newLogs];
 
-  if (redis) {
-    const state: ScanState = { lastBlock: latest.toString(), logs: allLogs };
+  if (redis && reachedBlock > lastBlock) {
+    const state: ScanState = { lastBlock: reachedBlock.toString(), logs: allLogs };
     await withTimeout(redis.set(stateKey, JSON.stringify(state, jsonReplacer), "EX", STATE_TTL_SECONDS), 5_000);
     mark(stateKey, "redis.set done", t0);
   }
