@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getLeaderboard, type LeaderboardEntry } from "@/lib/onchain-data";
+import { type LeaderboardEntry } from "@/lib/onchain-data";
+import { getLeaderboardFast } from "@/lib/onchain-data-fast";
 import { serializeBigInts } from "@/lib/api-utils";
-import { withRedisCache } from "@/lib/server-cache";
 
 type SortBy = "price" | "volume24h" | "newest" | "holders";
 
@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
     ? (sortByParam as SortBy)
     : "price";
 
-  const entries = await withRedisCache("leaderboard", getLeaderboard);
+  const entries = await getLeaderboardFast();
   const sorted = sortEntries(entries, sortBy);
 
   const rows = sorted.map((entry) => ({

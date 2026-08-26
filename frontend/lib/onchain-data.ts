@@ -56,10 +56,15 @@ async function getContractEventsChunked(
 // components (train.md — several pages call it directly since it doesn't
 // use `fs`), so caching here has to be a plain in-memory Map: anything
 // Node-only (e.g. a Redis client) would break the browser bundle. The
-// cross-instance Redis cache that actually fixes repeated-rescan latency on
-// Vercel lives in `server-cache.ts` instead, wrapped around these functions
-// only at the API-route call sites (see `app/api/*/route.ts`), which are
-// always server-only.
+// public API routes that actually need to be fast (leaderboard, token
+// stats, user info, price history) don't call these cached functions at
+// all — they use the Redis-backed incremental scan in
+// `onchain-data-fast.ts` instead, which persists "how far we've scanned"
+// so repeat calls only fetch the delta since last time instead of
+// re-scanning the full DEPLOY_BLOCK..latest range (see that file's
+// comment). The pure mapping helpers below (mapRegisteredUserLogs etc.) are
+// shared between both paths so they agree on how a log becomes a typed
+// result.
 const CACHE_TTL_MS = 5_000;
 const requestCache = new Map<string, { promise: Promise<unknown>; expires: number }>();
 
@@ -98,6 +103,17 @@ function assertPlatformConfigured() {
   }
 }
 
+/** Pure log -> typed-result mapping, shared with the server-only incremental
+ *  scan path in onchain-data-fast.ts so both fetching strategies (in-memory
+ *  cache here vs. Redis-persisted incremental scan there) agree on how a
+ *  UserRegistered log becomes a RegisteredUser. */
+export function mapRegisteredUserLogs(logs: Log[]): RegisteredUser[] {
+  return logs.map((log) => {
+    const args = (log as unknown as { args: { user: Address; username: string; token: Address } }).args;
+    return { address: args.user, username: args.username, token: args.token };
+  });
+}
+
 export async function getAllRegisteredUsers(): Promise<RegisteredUser[]> {
   assertPlatformConfigured();
   return cached("registered-users", async () => {
@@ -108,10 +124,7 @@ export async function getAllRegisteredUsers(): Promise<RegisteredUser[]> {
       fromBlock: DEPLOY_BLOCK,
     });
 
-    return logs.map((log) => {
-      const args = (log as unknown as { args: { user: Address; username: string; token: Address } }).args;
-      return { address: args.user, username: args.username, token: args.token };
-    });
+    return mapRegisteredUserLogs(logs);
   });
 }
 
@@ -125,13 +138,47 @@ export async function getUserByUsername(username: string): Promise<RegisteredUse
   return users.find((u) => u.username.toLowerCase() === username.toLowerCase()) ?? null;
 }
 
-interface TradeEvent {
+export interface TradeEvent {
   trader: Address;
   isBuy: boolean;
   amount: bigint;
   usdcAmount: bigint; // cost (buy) or proceeds (sell), post-fee-split
   blockNumber: bigint;
   logIndex: number;
+}
+
+/** Pure log -> typed-result mapping — see mapRegisteredUserLogs's comment. */
+export function mapTradeEventLogs(buyLogs: Log[], sellLogs: Log[]): TradeEvent[] {
+  const events: TradeEvent[] = [
+    ...buyLogs.map((log) => {
+      const args = (log as unknown as { args: { buyer: Address; amount: bigint; cost: bigint } }).args;
+      return {
+        trader: args.buyer,
+        isBuy: true,
+        amount: args.amount,
+        usdcAmount: args.cost,
+        blockNumber: log.blockNumber ?? 0n,
+        logIndex: log.logIndex ?? 0,
+      };
+    }),
+    ...sellLogs.map((log) => {
+      const args = (log as unknown as { args: { seller: Address; amount: bigint; proceeds: bigint } }).args;
+      return {
+        trader: args.seller,
+        isBuy: false,
+        amount: args.amount,
+        usdcAmount: args.proceeds,
+        blockNumber: log.blockNumber ?? 0n,
+        logIndex: log.logIndex ?? 0,
+      };
+    }),
+  ];
+
+  events.sort((a, b) => {
+    if (a.blockNumber !== b.blockNumber) return a.blockNumber < b.blockNumber ? -1 : 1;
+    return a.logIndex - b.logIndex;
+  });
+  return events;
 }
 
 function getTradeEventsForToken(token: Address): Promise<TradeEvent[]> {
@@ -154,40 +201,11 @@ function getTradeEventsForToken(token: Address): Promise<TradeEvent[]> {
       }),
     ]);
 
-    const events: TradeEvent[] = [
-      ...buyLogs.map((log) => {
-        const args = (log as unknown as { args: { buyer: Address; amount: bigint; cost: bigint } }).args;
-        return {
-          trader: args.buyer,
-          isBuy: true,
-          amount: args.amount,
-          usdcAmount: args.cost,
-          blockNumber: log.blockNumber ?? 0n,
-          logIndex: log.logIndex ?? 0,
-        };
-      }),
-      ...sellLogs.map((log) => {
-        const args = (log as unknown as { args: { seller: Address; amount: bigint; proceeds: bigint } }).args;
-        return {
-          trader: args.seller,
-          isBuy: false,
-          amount: args.amount,
-          usdcAmount: args.proceeds,
-          blockNumber: log.blockNumber ?? 0n,
-          logIndex: log.logIndex ?? 0,
-        };
-      }),
-    ];
-
-    events.sort((a, b) => {
-      if (a.blockNumber !== b.blockNumber) return a.blockNumber < b.blockNumber ? -1 : 1;
-      return a.logIndex - b.logIndex;
-    });
-    return events;
+    return mapTradeEventLogs(buyLogs, sellLogs);
   });
 }
 
-async function getBlockTimestamps(blockNumbers: bigint[]): Promise<Map<bigint, number>> {
+export async function getBlockTimestamps(blockNumbers: bigint[]): Promise<Map<bigint, number>> {
   const unique = Array.from(new Set(blockNumbers));
   const blocks = await Promise.all(unique.map((blockNumber) => publicClient.getBlock({ blockNumber })));
   const map = new Map<bigint, number>();
@@ -201,14 +219,12 @@ async function getBlockTimestamps(blockNumbers: bigint[]): Promise<Map<bigint, n
  * token's current on-chain totalSupply, so it never needs to know the
  * creator-premint constant baked into SocialFiPlatform.sol.
  */
-export async function getPriceHistory(token: Address): Promise<PricePoint[]> {
-  const [currentSupply, events] = await Promise.all([
-    publicClient.readContract({ address: token, abi: userTokenAbi, functionName: "totalSupply" }) as Promise<bigint>,
-    getTradeEventsForToken(token),
-  ]);
-
-  const timestamps = await getBlockTimestamps(events.map((e) => e.blockNumber));
-
+/** Pure reconstruction logic — see mapRegisteredUserLogs's comment. */
+export function reconstructPriceHistory(
+  currentSupply: bigint,
+  events: TradeEvent[],
+  timestamps: Map<bigint, number>
+): PricePoint[] {
   const points: PricePoint[] = [];
   let runningSupply = currentSupply;
   for (let i = events.length - 1; i >= 0; i--) {
@@ -222,6 +238,16 @@ export async function getPriceHistory(token: Address): Promise<PricePoint[]> {
   }
   points.push({ timestamp: Date.now(), price: getPrice(currentSupply) });
   return points;
+}
+
+export async function getPriceHistory(token: Address): Promise<PricePoint[]> {
+  const [currentSupply, events] = await Promise.all([
+    publicClient.readContract({ address: token, abi: userTokenAbi, functionName: "totalSupply" }) as Promise<bigint>,
+    getTradeEventsForToken(token),
+  ]);
+
+  const timestamps = await getBlockTimestamps(events.map((e) => e.blockNumber));
+  return reconstructPriceHistory(currentSupply, events, timestamps);
 }
 
 export interface TradeHistoryEntry {
@@ -337,15 +363,49 @@ export async function getUserActivity(address: Address, limit = 50): Promise<Act
   }));
 }
 
+/** Pure aggregation — see mapRegisteredUserLogs's comment. */
+export function compute24hVolume(events: TradeEvent[], timestamps: Map<bigint, number>): bigint {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  return events
+    .filter((e) => (timestamps.get(e.blockNumber) ?? 0) >= cutoff)
+    .reduce((sum, e) => sum + e.usdcAmount, 0n);
+}
+
 export async function get24hVolume(token: Address): Promise<bigint> {
   const events = await getTradeEventsForToken(token);
   if (events.length === 0) return 0n;
 
   const timestamps = await getBlockTimestamps(events.map((e) => e.blockNumber));
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  return events
-    .filter((e) => (timestamps.get(e.blockNumber) ?? 0) >= cutoff)
-    .reduce((sum, e) => sum + e.usdcAmount, 0n);
+  return compute24hVolume(events, timestamps);
+}
+
+/** Pure candidate extraction — see mapRegisteredUserLogs's comment. Actual
+ *  holder count still needs a live balanceOf() per candidate (a transfer
+ *  recipient may have since sold down to zero), done by the caller. */
+export function candidateHoldersFromTransferLogs(logs: Log[]): Address[] {
+  const candidates = new Set<Address>();
+  for (const log of logs) {
+    const args = (log as unknown as { args: { to: Address } }).args;
+    if (args.to && args.to !== zeroAddress) {
+      candidates.add(args.to);
+    }
+  }
+  return Array.from(candidates);
+}
+
+export async function countNonzeroHolders(token: Address, candidates: Address[]): Promise<number> {
+  const balances = await Promise.all(
+    candidates.map(
+      (address) =>
+        publicClient.readContract({
+          address: token,
+          abi: userTokenAbi,
+          functionName: "balanceOf",
+          args: [address],
+        }) as Promise<bigint>
+    )
+  );
+  return balances.filter((balance) => balance > 0n).length;
 }
 
 export function getHolderCount(token: Address): Promise<number> {
@@ -357,26 +417,7 @@ export function getHolderCount(token: Address): Promise<number> {
       fromBlock: DEPLOY_BLOCK,
     });
 
-    const candidates = new Set<Address>();
-    for (const log of logs) {
-      const args = (log as unknown as { args: { to: Address } }).args;
-      if (args.to && args.to !== zeroAddress) {
-        candidates.add(args.to);
-      }
-    }
-
-    const balances = await Promise.all(
-      Array.from(candidates).map((address) =>
-        publicClient.readContract({
-          address: token,
-          abi: userTokenAbi,
-          functionName: "balanceOf",
-          args: [address],
-        }) as Promise<bigint>
-      )
-    );
-
-    return balances.filter((balance) => balance > 0n).length;
+    return countNonzeroHolders(token, candidateHoldersFromTransferLogs(logs));
   });
 }
 
