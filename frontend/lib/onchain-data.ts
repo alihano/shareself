@@ -11,6 +11,34 @@ import {
 import { getPrice } from "./bonding-curve";
 import { throttledRpc } from "./rpc-throttle";
 
+// Arc Testnet's public RPC rejects eth_getLogs once the fromBlock..toBlock
+// range grows past some cap ("requested range too large", code -32012) — it
+// didn't error right after deploy when the range was still small, but as the
+// chain advances past DEPLOY_BLOCK the single fromBlock:DEPLOY_BLOCK,
+// toBlock:"latest" calls below eventually exceed that cap. This splits any
+// such call into fixed-size windows (still funneled through throttledRpc, one
+// at a time) so the range per request stays under the cap no matter how far
+// the chain has advanced.
+const MAX_BLOCK_RANGE = 10_000n;
+
+async function getContractEventsChunked(
+  params: Omit<Parameters<typeof publicClient.getContractEvents>[0], "fromBlock" | "toBlock" | "blockHash"> & {
+    fromBlock: bigint;
+  }
+): Promise<Log[]> {
+  const latest = await publicClient.getBlockNumber();
+
+  const logs: Log[] = [];
+  for (let start = params.fromBlock; start <= latest; start += MAX_BLOCK_RANGE + 1n) {
+    const end = start + MAX_BLOCK_RANGE < latest ? start + MAX_BLOCK_RANGE : latest;
+    const chunk = await throttledRpc(() =>
+      publicClient.getContractEvents({ ...params, fromBlock: start, toBlock: end })
+    );
+    logs.push(...chunk);
+  }
+  return logs;
+}
+
 // No enumerable "all users" getter exists on SocialFiPlatform (train.md) —
 // every function here derives its answer by scanning event logs instead of
 // reading from a separate index/DB. Fine at testnet-demo scale; revisit with
@@ -62,15 +90,12 @@ function assertPlatformConfigured() {
 export async function getAllRegisteredUsers(): Promise<RegisteredUser[]> {
   assertPlatformConfigured();
   return cached("registered-users", async () => {
-    const logs = await throttledRpc(() =>
-      publicClient.getContractEvents({
-        address: SOCIALFI_PLATFORM_ADDRESS,
-        abi: socialFiPlatformAbi,
-        eventName: "UserRegistered",
-        fromBlock: DEPLOY_BLOCK,
-        toBlock: "latest",
-      })
-    );
+    const logs = await getContractEventsChunked({
+      address: SOCIALFI_PLATFORM_ADDRESS,
+      abi: socialFiPlatformAbi,
+      eventName: "UserRegistered",
+      fromBlock: DEPLOY_BLOCK,
+    });
 
     return logs.map((log) => {
       const args = (log as unknown as { args: { user: Address; username: string; token: Address } }).args;
@@ -102,26 +127,20 @@ function getTradeEventsForToken(token: Address): Promise<TradeEvent[]> {
   assertPlatformConfigured();
   return cached(`trade-events:${token.toLowerCase()}`, async () => {
     const [buyLogs, sellLogs] = await Promise.all([
-      throttledRpc(() =>
-        publicClient.getContractEvents({
-          address: SOCIALFI_PLATFORM_ADDRESS,
-          abi: socialFiPlatformAbi,
-          eventName: "TokensBought",
-          args: { token },
-          fromBlock: DEPLOY_BLOCK,
-          toBlock: "latest",
-        })
-      ),
-      throttledRpc(() =>
-        publicClient.getContractEvents({
-          address: SOCIALFI_PLATFORM_ADDRESS,
-          abi: socialFiPlatformAbi,
-          eventName: "TokensSold",
-          args: { token },
-          fromBlock: DEPLOY_BLOCK,
-          toBlock: "latest",
-        })
-      ),
+      getContractEventsChunked({
+        address: SOCIALFI_PLATFORM_ADDRESS,
+        abi: socialFiPlatformAbi,
+        eventName: "TokensBought",
+        args: { token },
+        fromBlock: DEPLOY_BLOCK,
+      }),
+      getContractEventsChunked({
+        address: SOCIALFI_PLATFORM_ADDRESS,
+        abi: socialFiPlatformAbi,
+        eventName: "TokensSold",
+        args: { token },
+        fromBlock: DEPLOY_BLOCK,
+      }),
     ]);
 
     const events: TradeEvent[] = [
@@ -236,26 +255,20 @@ export interface ActivityEntry {
 export async function getUserActivity(address: Address, limit = 50): Promise<ActivityEntry[]> {
   assertPlatformConfigured();
   const [buyLogs, sellLogs, users] = await Promise.all([
-    throttledRpc(() =>
-      publicClient.getContractEvents({
-        address: SOCIALFI_PLATFORM_ADDRESS,
-        abi: socialFiPlatformAbi,
-        eventName: "TokensBought",
-        args: { buyer: address },
-        fromBlock: DEPLOY_BLOCK,
-        toBlock: "latest",
-      })
-    ),
-    throttledRpc(() =>
-      publicClient.getContractEvents({
-        address: SOCIALFI_PLATFORM_ADDRESS,
-        abi: socialFiPlatformAbi,
-        eventName: "TokensSold",
-        args: { seller: address },
-        fromBlock: DEPLOY_BLOCK,
-        toBlock: "latest",
-      })
-    ),
+    getContractEventsChunked({
+      address: SOCIALFI_PLATFORM_ADDRESS,
+      abi: socialFiPlatformAbi,
+      eventName: "TokensBought",
+      args: { buyer: address },
+      fromBlock: DEPLOY_BLOCK,
+    }),
+    getContractEventsChunked({
+      address: SOCIALFI_PLATFORM_ADDRESS,
+      abi: socialFiPlatformAbi,
+      eventName: "TokensSold",
+      args: { seller: address },
+      fromBlock: DEPLOY_BLOCK,
+    }),
     getAllRegisteredUsers(),
   ]);
 
@@ -326,15 +339,12 @@ export async function get24hVolume(token: Address): Promise<bigint> {
 
 export function getHolderCount(token: Address): Promise<number> {
   return cached(`holder-count:${token.toLowerCase()}`, async () => {
-    const logs: Log[] = await throttledRpc(() =>
-      publicClient.getContractEvents({
-        address: token,
-        abi: userTokenAbi,
-        eventName: "Transfer",
-        fromBlock: DEPLOY_BLOCK,
-        toBlock: "latest",
-      })
-    );
+    const logs = await getContractEventsChunked({
+      address: token,
+      abi: userTokenAbi,
+      eventName: "Transfer",
+      fromBlock: DEPLOY_BLOCK,
+    });
 
     const candidates = new Set<Address>();
     for (const log of logs) {
