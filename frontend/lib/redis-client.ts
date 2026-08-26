@@ -1,0 +1,18 @@
+import Redis from "ioredis";
+
+// Reused across warm serverless invocations — module scope survives on a
+// warm Vercel container, so this avoids a fresh TCP+TLS handshake on every
+// request. `null` when REDIS_URL isn't set (e.g. local dev without Redis) —
+// callers must treat that as "caching unavailable" and fall through to a
+// direct fetch, never throw.
+declare global {
+  // eslint-disable-next-line no-var
+  var __redisClient: Redis | undefined;
+}
+
+export const redis: Redis | null = process.env.REDIS_URL
+  ? (globalThis.__redisClient ??= new Redis(process.env.REDIS_URL, {
+      maxRetriesPerRequest: 2,
+      lazyConnect: true,
+    }))
+  : null;

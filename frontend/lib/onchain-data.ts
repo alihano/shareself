@@ -51,6 +51,15 @@ async function getContractEventsChunked(
 // this, that burst of concurrent eth_getLogs calls is exactly what tripped
 // Arc Testnet's public RPC rate limit (see train.md). Short TTL + in-flight
 // dedup collapses near-simultaneous callers onto one real request.
+//
+// This module is imported from both API routes (server) and client
+// components (train.md — several pages call it directly since it doesn't
+// use `fs`), so caching here has to be a plain in-memory Map: anything
+// Node-only (e.g. a Redis client) would break the browser bundle. The
+// cross-instance Redis cache that actually fixes repeated-rescan latency on
+// Vercel lives in `server-cache.ts` instead, wrapped around these functions
+// only at the API-route call sites (see `app/api/*/route.ts`), which are
+// always server-only.
 const CACHE_TTL_MS = 5_000;
 const requestCache = new Map<string, { promise: Promise<unknown>; expires: number }>();
 
