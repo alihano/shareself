@@ -11,5 +11,10 @@ export const publicClient = createPublicClient({
   // no single instance is issuing overlapping requests. Retrying here is
   // what absorbs those cross-instance collisions instead of failing the
   // request outright.
-  transport: http(undefined, { retryCount: 6, retryDelay: 1500 }),
+  // retryDelay is short on purpose: a live test against Arc's RPC showed a
+  // rate-limited call succeeds again immediately on the very next attempt,
+  // so a long fixed delay here mostly just adds dead time across the many
+  // sequential chunked calls a single page load can trigger, without
+  // buying extra reliability.
+  transport: http(undefined, { retryCount: 6, retryDelay: 500 }),
 });

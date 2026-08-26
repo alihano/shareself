@@ -10,9 +10,14 @@ import { redis } from "./redis-client";
 // isn't configured (e.g. local dev) or Redis errors.
 //
 // TTL trades staleness for speed: within this window, a trade might not be
-// reflected yet for someone else loading the page. Fine for testnet-demo
-// scale; revisit if that lag becomes a real complaint.
-const TTL_SECONDS = 30;
+// reflected yet for someone else loading the page. Measured directly
+// against the live deployment: a cold scan (empty cache) takes ~230s, so a
+// TTL anywhere near that (the original 30s) barely helps — most requests
+// still land on an expired entry and re-pay the full 230s. 3 minutes keeps
+// the expensive result around for long enough to actually get reused before
+// the next scan has to pay that cost again. Fine for testnet-demo scale;
+// revisit if that lag becomes a real complaint.
+const TTL_SECONDS = 180;
 
 function jsonReplacer(_key: string, value: unknown) {
   return typeof value === "bigint" ? { $bigint: value.toString() } : value;
