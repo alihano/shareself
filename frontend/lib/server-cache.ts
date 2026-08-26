@@ -25,16 +25,36 @@ function jsonReviver(_key: string, value: unknown) {
   return value;
 }
 
+// Belt-and-suspenders on top of redis-client.ts's own connectTimeout: caps
+// how long any single Redis op can block this request before we give up on
+// it and treat it as a miss, so a slow/wedged connection degrades to an
+// uncached direct fetch instead of hanging the whole page.
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(undefined);
+      }
+    );
+  });
+}
+
 export async function withRedisCache<T>(key: string, fn: () => Promise<T>): Promise<T> {
   if (redis) {
-    const raw = await redis.get(key).catch(() => null);
+    const raw = await withTimeout(redis.get(key), 3_000);
     if (raw) return JSON.parse(raw, jsonReviver) as T;
   }
 
   const value = await fn();
 
   if (redis) {
-    await redis.set(key, JSON.stringify(value, jsonReplacer), "EX", TTL_SECONDS).catch(() => {});
+    await withTimeout(redis.set(key, JSON.stringify(value, jsonReplacer), "EX", TTL_SECONDS), 3_000);
   }
   return value;
 }
