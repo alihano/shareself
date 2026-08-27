@@ -3,16 +3,22 @@
 import type { Address } from "viem";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { getUserActivity } from "@/lib/onchain-data";
+import { apiClient } from "@/lib/api-client";
+import type { ActivityEntry } from "@/lib/onchain-data";
 import { formatUsdc, formatShareAmount, formatRelativeTime } from "@/lib/format";
 import { Loading } from "@/components/common/Loading";
 import { Avatar } from "@/components/common/Avatar";
 import { arcTestnet } from "@/lib/arc-config";
 
+type ActivityEntryRaw = Omit<ActivityEntry, "amount" | "usdcAmount"> & { amount: string; usdcAmount: string };
+
 export function ActivityFeed({ address }: { address: Address }) {
   const { data, isLoading } = useQuery({
     queryKey: ["activity", address],
-    queryFn: () => getUserActivity(address),
+    queryFn: async () => {
+      const res = await apiClient.get<ActivityEntryRaw[]>(`/api/activity/${address}`);
+      return res.data.map((e) => ({ ...e, amount: BigInt(e.amount), usdcAmount: BigInt(e.usdcAmount) })) as ActivityEntry[];
+    },
     staleTime: 15_000,
   });
 

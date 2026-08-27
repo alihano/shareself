@@ -10,8 +10,12 @@ import {
   type TokenStats,
   type LeaderboardEntry,
   type PricePoint,
+  type TradeHistoryEntry,
+  type ActivityEntry,
+  type Holding,
   mapRegisteredUserLogs,
   mapTradeEventLogs,
+  mapActivityLogs,
   reconstructPriceHistory,
   compute24hVolume,
   candidateHoldersFromTransferLogs,
@@ -217,4 +221,91 @@ export async function getPriceHistoryFast(token: Address): Promise<PricePoint[]>
 
   const timestamps = await getBlockTimestamps(events.map((e) => e.blockNumber));
   return reconstructPriceHistory(currentSupply, events, timestamps);
+}
+
+/** Newest-first trade log for a token, for components/trading/TradeHistory.tsx
+ *  and the notifications page's "your token activity" section. */
+export async function getTradeHistoryFast(token: Address, limit = 25): Promise<TradeHistoryEntry[]> {
+  const latest = await getSafeLatestBlock();
+  const events = await getTradeEventsForTokenFast(token, latest);
+  const recent = events.slice(-limit).reverse();
+  const timestamps = await getBlockTimestamps(recent.map((e) => e.blockNumber));
+
+  return recent.map((e) => ({
+    trader: e.trader,
+    isBuy: e.isBuy,
+    amount: e.amount,
+    usdcAmount: e.usdcAmount,
+    timestamp: timestamps.get(e.blockNumber) ?? 0,
+  }));
+}
+
+/**
+ * A wallet's own buy/sell activity across every token (not just one) — for
+ * the dashboard's Activity feed. `buyer`/`seller` are indexed on
+ * TokensBought/TokensSold, so this filters directly at the RPC level
+ * instead of scanning every token's trades and matching the trader.
+ */
+export async function getUserActivityFast(address: Address, limit = 50): Promise<ActivityEntry[]> {
+  const latest = await getSafeLatestBlock();
+  const [buyLogs, sellLogs, users] = await Promise.all([
+    scanEventsIncremental(`scan:activity-buy:${address.toLowerCase()}`, latest, {
+      address: SOCIALFI_PLATFORM_ADDRESS,
+      abi: socialFiPlatformAbi,
+      eventName: "TokensBought",
+      args: { buyer: address },
+    }),
+    scanEventsIncremental(`scan:activity-sell:${address.toLowerCase()}`, latest, {
+      address: SOCIALFI_PLATFORM_ADDRESS,
+      abi: socialFiPlatformAbi,
+      eventName: "TokensSold",
+      args: { seller: address },
+    }),
+    getAllRegisteredUsersFast(latest),
+  ]);
+
+  const usernameByToken = new Map(users.map((u) => [u.token.toLowerCase(), u.username]));
+  const raw = mapActivityLogs(buyLogs, sellLogs);
+  const recent = raw.slice(0, limit);
+  const timestamps = await getBlockTimestamps(recent.map((e) => e.blockNumber));
+
+  return recent.map((e) => ({
+    token: e.token,
+    username: usernameByToken.get(e.token.toLowerCase()),
+    isBuy: e.isBuy,
+    amount: e.amount,
+    usdcAmount: e.usdcAmount,
+    timestamp: timestamps.get(e.blockNumber) ?? 0,
+    txHash: e.txHash,
+  }));
+}
+
+/** Every token `holder` owns a nonzero balance of, across all registered
+ *  users — for the dashboard's Wallet section. */
+export async function getHoldingsForAddressFast(holder: Address): Promise<Holding[]> {
+  const latest = await getSafeLatestBlock();
+  const users = await getAllRegisteredUsersFast(latest);
+  const [balances, supplies] = await Promise.all([
+    Promise.all(
+      users.map(
+        (u) =>
+          publicClient.readContract({
+            address: u.token,
+            abi: userTokenAbi,
+            functionName: "balanceOf",
+            args: [holder],
+          }) as Promise<bigint>
+      )
+    ),
+    Promise.all(
+      users.map(
+        (u) =>
+          publicClient.readContract({ address: u.token, abi: userTokenAbi, functionName: "totalSupply" }) as Promise<bigint>
+      )
+    ),
+  ]);
+
+  return users
+    .map((user, i) => ({ ...user, balance: balances[i], currentPrice: getPrice(supplies[i]) }))
+    .filter((h) => h.balance > 0n);
 }

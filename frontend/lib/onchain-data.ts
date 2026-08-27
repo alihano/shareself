@@ -1,82 +1,22 @@
 import { type Address, type Log, zeroAddress } from "viem";
 import { publicClient } from "./viem-client";
-import {
-  DEPLOY_BLOCK,
-  DIRECT_MESSAGING_ADDRESS,
-  SOCIALFI_PLATFORM_ADDRESS,
-  directMessagingAbi,
-  socialFiPlatformAbi,
-  userTokenAbi,
-} from "./contracts";
+import { DIRECT_MESSAGING_ADDRESS, directMessagingAbi, userTokenAbi } from "./contracts";
 import { getPrice } from "./bonding-curve";
-import { throttledRpc } from "./rpc-throttle";
 
-// Arc Testnet's public RPC rejects eth_getLogs once the fromBlock..toBlock
-// range grows past some cap ("requested range too large", code -32012) — it
-// didn't error right after deploy when the range was still small, but as the
-// chain advances past DEPLOY_BLOCK the single fromBlock:DEPLOY_BLOCK,
-// toBlock:"latest" calls below eventually exceed that cap. This splits any
-// such call into fixed-size windows (still funneled through throttledRpc, one
-// at a time) so the range per request stays under the cap no matter how far
-// the chain has advanced.
-// Empirically confirmed against Arc Testnet's live RPC: 25,000 blocks
-// succeeds, 30,000 hits "requested range too large" (code -32012).
-const MAX_BLOCK_RANGE = 25_000n;
-
-async function getContractEventsChunked(
-  params: Omit<Parameters<typeof publicClient.getContractEvents>[0], "fromBlock" | "toBlock" | "blockHash"> & {
-    fromBlock: bigint;
-  }
-): Promise<Log[]> {
-  const latest = await publicClient.getBlockNumber();
-
-  const logs: Log[] = [];
-  for (let start = params.fromBlock; start <= latest; start += MAX_BLOCK_RANGE + 1n) {
-    const end = start + MAX_BLOCK_RANGE < latest ? start + MAX_BLOCK_RANGE : latest;
-    const chunk = await throttledRpc(() =>
-      publicClient.getContractEvents({ ...params, fromBlock: start, toBlock: end })
-    );
-    logs.push(...chunk);
-  }
-  return logs;
-}
-
-// No enumerable "all users" getter exists on SocialFiPlatform (train.md) —
-// every function here derives its answer by scanning event logs instead of
-// reading from a separate index/DB. Fine at testnet-demo scale; revisit with
-// a real indexer if the registered-user count grows large (see train.md).
-
-// A single profile page independently asks for the same token's trade
-// events 3 times over (24h volume, price history, trade history) — without
-// this, that burst of concurrent eth_getLogs calls is exactly what tripped
-// Arc Testnet's public RPC rate limit (see train.md). Short TTL + in-flight
-// dedup collapses near-simultaneous callers onto one real request.
-//
-// This module is imported from both API routes (server) and client
-// components (train.md — several pages call it directly since it doesn't
-// use `fs`), so caching here has to be a plain in-memory Map: anything
-// Node-only (e.g. a Redis client) would break the browser bundle. The
-// public API routes that actually need to be fast (leaderboard, token
-// stats, user info, price history) don't call these cached functions at
-// all — they use the Redis-backed incremental scan in
-// `onchain-data-fast.ts` instead, which persists "how far we've scanned"
-// so repeat calls only fetch the delta since last time instead of
-// re-scanning the full DEPLOY_BLOCK..latest range (see that file's
-// comment). The pure mapping helpers below (mapRegisteredUserLogs etc.) are
-// shared between both paths so they agree on how a log becomes a typed
-// result.
-const CACHE_TTL_MS = 5_000;
-const requestCache = new Map<string, { promise: Promise<unknown>; expires: number }>();
-
-function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const hit = requestCache.get(key);
-  if (hit && hit.expires > Date.now()) return hit.promise as Promise<T>;
-
-  const promise = fn();
-  requestCache.set(key, { promise, expires: Date.now() + CACHE_TTL_MS });
-  promise.catch(() => requestCache.delete(key)); // don't cache failures
-  return promise;
-}
+// This module holds the *types* and *pure* log -> typed-result mapping
+// helpers shared between the client (several pages/components call these
+// types directly, and this file doesn't use `fs` so it's safe to import
+// there) and the server-only incremental-scan implementation in
+// onchain-data-fast.ts, which is what every API route actually calls for
+// real data. The scanning logic itself used to live here too (a plain
+// in-memory cache wrapping direct eth_getLogs calls), but that path had no
+// Redis persistence and no graceful degradation on failure — an Arc RPC
+// rate-limit hit would throw uncaught and crash whatever page called it
+// (confirmed in production: the profile page's Server Component crashed
+// this way before being switched to onchain-data-fast.ts). Removed once
+// every caller was migrated to the fast path (either directly, for server
+// components, or through a small API route, for client components) —
+// see onchain-data-fast.ts's comment for how the fast path works.
 
 export interface RegisteredUser {
   address: Address;
@@ -97,45 +37,14 @@ export interface TokenStats {
   volume24h: bigint; // USDC, 6 decimals
 }
 
-function assertPlatformConfigured() {
-  if (!SOCIALFI_PLATFORM_ADDRESS) {
-    throw new Error("SocialFiPlatform address not configured (NEXT_PUBLIC_SOCIALFI_PLATFORM_ADDRESS)");
-  }
-}
-
 /** Pure log -> typed-result mapping, shared with the server-only incremental
- *  scan path in onchain-data-fast.ts so both fetching strategies (in-memory
- *  cache here vs. Redis-persisted incremental scan there) agree on how a
- *  UserRegistered log becomes a RegisteredUser. */
+ *  scan path in onchain-data-fast.ts so both fetching strategies agree on
+ *  how a UserRegistered log becomes a RegisteredUser. */
 export function mapRegisteredUserLogs(logs: Log[]): RegisteredUser[] {
   return logs.map((log) => {
     const args = (log as unknown as { args: { user: Address; username: string; token: Address } }).args;
     return { address: args.user, username: args.username, token: args.token };
   });
-}
-
-export async function getAllRegisteredUsers(): Promise<RegisteredUser[]> {
-  assertPlatformConfigured();
-  return cached("registered-users", async () => {
-    const logs = await getContractEventsChunked({
-      address: SOCIALFI_PLATFORM_ADDRESS,
-      abi: socialFiPlatformAbi,
-      eventName: "UserRegistered",
-      fromBlock: DEPLOY_BLOCK,
-    });
-
-    return mapRegisteredUserLogs(logs);
-  });
-}
-
-export async function getUsernameForAddress(address: Address): Promise<RegisteredUser | null> {
-  const users = await getAllRegisteredUsers();
-  return users.find((u) => u.address.toLowerCase() === address.toLowerCase()) ?? null;
-}
-
-export async function getUserByUsername(username: string): Promise<RegisteredUser | null> {
-  const users = await getAllRegisteredUsers();
-  return users.find((u) => u.username.toLowerCase() === username.toLowerCase()) ?? null;
 }
 
 export interface TradeEvent {
@@ -181,30 +90,6 @@ export function mapTradeEventLogs(buyLogs: Log[], sellLogs: Log[]): TradeEvent[]
   return events;
 }
 
-function getTradeEventsForToken(token: Address): Promise<TradeEvent[]> {
-  assertPlatformConfigured();
-  return cached(`trade-events:${token.toLowerCase()}`, async () => {
-    const [buyLogs, sellLogs] = await Promise.all([
-      getContractEventsChunked({
-        address: SOCIALFI_PLATFORM_ADDRESS,
-        abi: socialFiPlatformAbi,
-        eventName: "TokensBought",
-        args: { token },
-        fromBlock: DEPLOY_BLOCK,
-      }),
-      getContractEventsChunked({
-        address: SOCIALFI_PLATFORM_ADDRESS,
-        abi: socialFiPlatformAbi,
-        eventName: "TokensSold",
-        args: { token },
-        fromBlock: DEPLOY_BLOCK,
-      }),
-    ]);
-
-    return mapTradeEventLogs(buyLogs, sellLogs);
-  });
-}
-
 export async function getBlockTimestamps(blockNumbers: bigint[]): Promise<Map<bigint, number>> {
   const unique = Array.from(new Set(blockNumbers));
   const blocks = await Promise.all(unique.map((blockNumber) => publicClient.getBlock({ blockNumber })));
@@ -219,7 +104,6 @@ export async function getBlockTimestamps(blockNumbers: bigint[]): Promise<Map<bi
  * token's current on-chain totalSupply, so it never needs to know the
  * creator-premint constant baked into SocialFiPlatform.sol.
  */
-/** Pure reconstruction logic — see mapRegisteredUserLogs's comment. */
 export function reconstructPriceHistory(
   currentSupply: bigint,
   events: TradeEvent[],
@@ -240,37 +124,12 @@ export function reconstructPriceHistory(
   return points;
 }
 
-export async function getPriceHistory(token: Address): Promise<PricePoint[]> {
-  const [currentSupply, events] = await Promise.all([
-    publicClient.readContract({ address: token, abi: userTokenAbi, functionName: "totalSupply" }) as Promise<bigint>,
-    getTradeEventsForToken(token),
-  ]);
-
-  const timestamps = await getBlockTimestamps(events.map((e) => e.blockNumber));
-  return reconstructPriceHistory(currentSupply, events, timestamps);
-}
-
 export interface TradeHistoryEntry {
   trader: Address;
   isBuy: boolean;
   amount: bigint;
   usdcAmount: bigint;
   timestamp: number;
-}
-
-/** Newest-first trade log for a token, for components/trading/TradeHistory.tsx. */
-export async function getTradeHistory(token: Address, limit = 25): Promise<TradeHistoryEntry[]> {
-  const events = await getTradeEventsForToken(token);
-  const recent = events.slice(-limit).reverse();
-  const timestamps = await getBlockTimestamps(recent.map((e) => e.blockNumber));
-
-  return recent.map((e) => ({
-    trader: e.trader,
-    isBuy: e.isBuy,
-    amount: e.amount,
-    usdcAmount: e.usdcAmount,
-    timestamp: timestamps.get(e.blockNumber) ?? 0,
-  }));
 }
 
 export interface ActivityEntry {
@@ -283,45 +142,19 @@ export interface ActivityEntry {
   txHash: `0x${string}`;
 }
 
-/**
- * A wallet's own buy/sell activity across every token (not just one) — for
- * the dashboard's Activity feed. `buyer`/`seller` are indexed on
- * TokensBought/TokensSold, so this filters directly at the RPC level
- * instead of scanning every token's trades and matching the trader.
- */
-export async function getUserActivity(address: Address, limit = 50): Promise<ActivityEntry[]> {
-  assertPlatformConfigured();
-  const [buyLogs, sellLogs, users] = await Promise.all([
-    getContractEventsChunked({
-      address: SOCIALFI_PLATFORM_ADDRESS,
-      abi: socialFiPlatformAbi,
-      eventName: "TokensBought",
-      args: { buyer: address },
-      fromBlock: DEPLOY_BLOCK,
-    }),
-    getContractEventsChunked({
-      address: SOCIALFI_PLATFORM_ADDRESS,
-      abi: socialFiPlatformAbi,
-      eventName: "TokensSold",
-      args: { seller: address },
-      fromBlock: DEPLOY_BLOCK,
-    }),
-    getAllRegisteredUsers(),
-  ]);
+export interface RawActivityEntry {
+  token: Address;
+  isBuy: boolean;
+  amount: bigint;
+  usdcAmount: bigint;
+  blockNumber: bigint;
+  logIndex: number;
+  txHash: `0x${string}`;
+}
 
-  const usernameByToken = new Map(users.map((u) => [u.token.toLowerCase(), u.username]));
-
-  type RawEntry = {
-    token: Address;
-    isBuy: boolean;
-    amount: bigint;
-    usdcAmount: bigint;
-    blockNumber: bigint;
-    logIndex: number;
-    txHash: `0x${string}`;
-  };
-
-  const raw: RawEntry[] = [
+/** Pure log -> typed-result mapping — see mapRegisteredUserLogs's comment. */
+export function mapActivityLogs(buyLogs: Log[], sellLogs: Log[]): RawActivityEntry[] {
+  const raw: RawActivityEntry[] = [
     ...buyLogs.map((log) => {
       const args = (log as unknown as { args: { token: Address; amount: bigint; cost: bigint } }).args;
       return {
@@ -349,18 +182,7 @@ export async function getUserActivity(address: Address, limit = 50): Promise<Act
   ];
 
   raw.sort((a, b) => (a.blockNumber !== b.blockNumber ? (a.blockNumber < b.blockNumber ? 1 : -1) : b.logIndex - a.logIndex));
-  const recent = raw.slice(0, limit);
-  const timestamps = await getBlockTimestamps(recent.map((e) => e.blockNumber));
-
-  return recent.map((e) => ({
-    token: e.token,
-    username: usernameByToken.get(e.token.toLowerCase()),
-    isBuy: e.isBuy,
-    amount: e.amount,
-    usdcAmount: e.usdcAmount,
-    timestamp: timestamps.get(e.blockNumber) ?? 0,
-    txHash: e.txHash,
-  }));
+  return raw;
 }
 
 /** Pure aggregation — see mapRegisteredUserLogs's comment. */
@@ -369,14 +191,6 @@ export function compute24hVolume(events: TradeEvent[], timestamps: Map<bigint, n
   return events
     .filter((e) => (timestamps.get(e.blockNumber) ?? 0) >= cutoff)
     .reduce((sum, e) => sum + e.usdcAmount, 0n);
-}
-
-export async function get24hVolume(token: Address): Promise<bigint> {
-  const events = await getTradeEventsForToken(token);
-  if (events.length === 0) return 0n;
-
-  const timestamps = await getBlockTimestamps(events.map((e) => e.blockNumber));
-  return compute24hVolume(events, timestamps);
 }
 
 /** Pure candidate extraction — see mapRegisteredUserLogs's comment. Actual
@@ -408,78 +222,13 @@ export async function countNonzeroHolders(token: Address, candidates: Address[])
   return balances.filter((balance) => balance > 0n).length;
 }
 
-export function getHolderCount(token: Address): Promise<number> {
-  return cached(`holder-count:${token.toLowerCase()}`, async () => {
-    const logs = await getContractEventsChunked({
-      address: token,
-      abi: userTokenAbi,
-      eventName: "Transfer",
-      fromBlock: DEPLOY_BLOCK,
-    });
-
-    return countNonzeroHolders(token, candidateHoldersFromTransferLogs(logs));
-  });
-}
-
-export async function getTokenStats(token: Address): Promise<TokenStats> {
-  const [totalSupply, holderCount, volume24h] = await Promise.all([
-    publicClient.readContract({ address: token, abi: userTokenAbi, functionName: "totalSupply" }) as Promise<bigint>,
-    getHolderCount(token),
-    get24hVolume(token),
-  ]);
-
-  return {
-    token,
-    totalSupply,
-    currentPrice: getPrice(totalSupply),
-    holderCount,
-    volume24h,
-  };
-}
-
 export interface LeaderboardEntry extends RegisteredUser {
   stats: TokenStats;
-}
-
-export async function getLeaderboard(): Promise<LeaderboardEntry[]> {
-  const users = await getAllRegisteredUsers();
-  const stats = await Promise.all(users.map((u) => getTokenStats(u.token)));
-  return users.map((user, i) => ({ ...user, stats: stats[i] }));
 }
 
 export interface Holding extends RegisteredUser {
   balance: bigint;
   currentPrice: bigint;
-}
-
-/** Every token `holder` owns a nonzero balance of, across all registered users. */
-export async function getHoldingsForAddress(holder: Address): Promise<Holding[]> {
-  const users = await getAllRegisteredUsers();
-  const [balances, supplies] = await Promise.all([
-    Promise.all(
-      users.map((u) =>
-        publicClient.readContract({
-          address: u.token,
-          abi: userTokenAbi,
-          functionName: "balanceOf",
-          args: [holder],
-        }) as Promise<bigint>
-      )
-    ),
-    Promise.all(
-      users.map((u) =>
-        publicClient.readContract({
-          address: u.token,
-          abi: userTokenAbi,
-          functionName: "totalSupply",
-        }) as Promise<bigint>
-      )
-    ),
-  ]);
-
-  return users
-    .map((user, i) => ({ ...user, balance: balances[i], currentPrice: getPrice(supplies[i]) }))
-    .filter((h) => h.balance > 0n);
 }
 
 /**

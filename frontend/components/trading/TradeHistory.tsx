@@ -2,7 +2,7 @@
 
 import type { Address } from "viem";
 import { useQuery } from "@tanstack/react-query";
-import { getTradeHistory } from "@/lib/onchain-data";
+import { apiClient } from "@/lib/api-client";
 import { formatUsdc, formatShareAmount, shortenAddress, formatRelativeTime } from "@/lib/format";
 import { Loading } from "@/components/common/Loading";
 import { Avatar } from "@/components/common/Avatar";
@@ -11,10 +11,21 @@ interface TradeHistoryProps {
   token: Address;
 }
 
+interface TradeHistoryRow {
+  trader: Address;
+  isBuy: boolean;
+  amount: string;
+  usdcAmount: string;
+  timestamp: number;
+}
+
 export function TradeHistory({ token }: TradeHistoryProps) {
   const { data, isLoading } = useQuery({
     queryKey: ["trade-history", token],
-    queryFn: () => getTradeHistory(token),
+    queryFn: async () => {
+      const res = await apiClient.get<TradeHistoryRow[]>("/api/trade-history", { params: { token } });
+      return res.data.map((t) => ({ ...t, amount: BigInt(t.amount), usdcAmount: BigInt(t.usdcAmount) }));
+    },
     staleTime: 15_000,
   });
 

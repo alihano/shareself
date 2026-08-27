@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
 import { useAccount } from "wagmi";
-import { useQuery } from "@tanstack/react-query";
 import { useUserToken } from "./useUserToken";
-import { getTradeHistory } from "@/lib/onchain-data";
+import { useTokenActivity } from "./useTokenActivity";
 import { ANNOUNCEMENTS } from "@/lib/announcements";
 import { getLastSeenNotificationsAt } from "@/lib/read-state";
 
 /**
  * True if there's a new announcement, or a new trade on the user's own
  * token (by someone else), since the last time they visited /notifications.
- * Shares its trade-history query key with app/notifications/page.tsx.
+ * Shares its trade-history query key with app/notifications/page.tsx (both
+ * go through useTokenActivity).
  */
 export function useUnreadNotifications() {
   const { address } = useAccount();
@@ -20,12 +20,7 @@ export function useUnreadNotifications() {
     setLastSeen(getLastSeenNotificationsAt());
   }, []);
 
-  const activityQuery = useQuery({
-    queryKey: ["notifications-token-activity", token],
-    queryFn: () => getTradeHistory(token!),
-    enabled: Boolean(token),
-    staleTime: 15_000,
-  });
+  const activityQuery = useTokenActivity(token);
 
   const hasUnreadAnnouncement = ANNOUNCEMENTS.some((a) => a.timestamp > lastSeen);
   const hasUnreadActivity = Boolean(

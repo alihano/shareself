@@ -7,7 +7,7 @@ import { apiClient } from "@/lib/api-client";
 import toast from "react-hot-toast";
 import { useUserToken } from "@/hooks/useUserToken";
 import { useMessaging } from "@/hooks/useMessaging";
-import { getHoldingsForAddress } from "@/lib/onchain-data";
+import type { Holding } from "@/lib/onchain-data";
 import { UserStats } from "@/components/user/UserStats";
 import { PortfolioCard } from "@/components/user/PortfolioCard";
 import { ActivityFeed } from "@/components/user/ActivityFeed";
@@ -21,6 +21,8 @@ interface TokenApiStats {
   volume24h: string;
 }
 
+type HoldingRaw = Omit<Holding, "balance" | "currentPrice"> & { balance: string; currentPrice: string };
+
 export default function DashboardPage() {
   const { address, isConnected } = useAccount();
   const { token, username, totalSupply, currentPrice, isRegistered, isLoading } = useUserToken(address);
@@ -28,7 +30,10 @@ export default function DashboardPage() {
 
   const holdingsQuery = useQuery({
     queryKey: ["holdings", address],
-    queryFn: () => getHoldingsForAddress(address!),
+    queryFn: async () => {
+      const res = await apiClient.get<HoldingRaw[]>(`/api/holdings/${address}`);
+      return res.data.map((h) => ({ ...h, balance: BigInt(h.balance), currentPrice: BigInt(h.currentPrice) })) as Holding[];
+    },
     enabled: Boolean(address),
     staleTime: 15_000,
   });

@@ -2,9 +2,8 @@
 
 import { useEffect } from "react";
 import { useAccount } from "wagmi";
-import { useQuery } from "@tanstack/react-query";
 import { useUserToken } from "@/hooks/useUserToken";
-import { getTradeHistory } from "@/lib/onchain-data";
+import { useTokenActivity } from "@/hooks/useTokenActivity";
 import { ANNOUNCEMENTS } from "@/lib/announcements";
 import { formatUsdc, formatShareAmount, shortenAddress, formatRelativeTime } from "@/lib/format";
 import { Loading } from "@/components/common/Loading";
@@ -33,13 +32,7 @@ function AnnouncementsSection() {
 function TokenActivitySection() {
   const { address } = useAccount();
   const { token, username, isRegistered } = useUserToken(address);
-
-  const query = useQuery({
-    queryKey: ["notifications-token-activity", token],
-    queryFn: () => getTradeHistory(token!),
-    enabled: Boolean(token),
-    staleTime: 15_000,
-  });
+  const query = useTokenActivity(token);
 
   if (!address) return null;
   if (!isRegistered) {
