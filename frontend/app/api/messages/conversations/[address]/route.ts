@@ -24,5 +24,5 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.json({ error: "Invalid or missing signature" }, { status: 401 });
   }
 
-  return NextResponse.json(getConversationsForUser(address));
+  return NextResponse.json(await getConversationsForUser(address));
 }

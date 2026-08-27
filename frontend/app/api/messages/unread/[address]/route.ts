@@ -13,5 +13,6 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   }
 
   const since = Number(request.nextUrl.searchParams.get("since") ?? "0");
-  return NextResponse.json({ hasUnread: hasNewMessagesSince(address, Number.isFinite(since) ? since : 0) });
+  const hasUnread = await hasNewMessagesSince(address, Number.isFinite(since) ? since : 0);
+  return NextResponse.json({ hasUnread });
 }

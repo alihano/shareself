@@ -35,6 +35,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Chat not unlocked between these addresses" }, { status: 403 });
   }
 
-  appendMessage({ from: from as Address, to: to as Address, text: text.trim(), timestamp: Date.now() });
+  await appendMessage({ from: from as Address, to: to as Address, text: text.trim(), timestamp: Date.now() });
   return NextResponse.json({ ok: true }, { status: 201 });
 }

@@ -28,5 +28,5 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.json({ error: "Chat not unlocked between these addresses" }, { status: 403 });
   }
 
-  return NextResponse.json(getConversation(from as Address, to as Address));
+  return NextResponse.json(await getConversation(from as Address, to as Address));
 }
