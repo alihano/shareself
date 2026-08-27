@@ -472,6 +472,33 @@ ajanı → sadece güven ≥8 olanlar rapora giriyor). Üç bulgu çıktı:
    sistemlerinin (ENS, Twitter handle'ları gibi) doğal/beklenen özelliği,
    ayrı bir kod hatası değil.
 
+## Her Alım Tekrarlanabilir Şekilde Başarısız Oluyordu: Frontend'de Unutulmuş Eski Fee Sabiti
+Kullanıcı miktardan bağımsız (1, 10 hisse fark etmiyor) her `buyToken` denemesinde
+MetaMask'ta "Interaction failed" / "Unknown transaction" alıp %100 tekrarlanabilir
+şekilde başarısız oluyordu. Gaz/native bakiye sanılmıştı ama doğrudan RPC ile
+kontrol edilince cüzdanın native (18 decimal) ve ERC-20 USDC (6 decimal, `0x3600...`)
+bakiyelerinin **birebir aynı, senkronize tek bir bakiye** olduğu doğrulandı (Arc'ın
+resmi dokümantasyonuyla uyumlu — train.md'nin daha önceki "bunlar ayrı, karıştırma"
+notu gaz açısından yanıltıcıymış, ikisi aslında aynı değerin farklı ondalık
+görünümü). `eth_call` ile `buyToken`'ı cömert bir `maxCost` ile simüle edince
+başarılı oldu — yani kontrat sorunlu değildi, **frontend'in hesapladığı `maxCost`
+gerçek maliyetten düşük çıkıyordu**.
+
+**Kök sebep**: `frontend/lib/bonding-curve.ts`'teki `BUY_FEE_BPS`/`SELL_FEE_BPS`
+hâlâ eski `200` (%2) değerindeydi — "Fee Değişiklikleri" notunda kontrat %3'e
+çıkarılırken (`SocialFiPlatform.sol`, testler, `TradeWidget.tsx`'in ekrandaki
+metni) senkronize edilen 4 yerin arasında bu dosya unutulmuştu. Sonuç: frontend
+her alımda gerçek maliyeti ~%1 düşük hesaplıyordu, `TradeWidget.tsx`'teki %0.5
+slippage payı bu farkı kapatamıyordu, her işlem `CostExceedsMax` ile revert
+oluyordu — miktardan bağımsız, tutarlı bir başarısızlıktı. **Düzeltme**: her iki
+sabit `300`'e (%3) çekildi, kontratla senkron hale getirildi.
+
+**Ders**: Bu dosya "senkron tutulması gereken yerler" listesine dahil edilmemişti
+çünkü sadece grafik/geçmiş fiyat hesaplaması için kullanıldığı düşünülmüştü —
+ama `useBondingCurve` üzerinden **gerçek alım/satım işlemlerinin `maxCost`/
+`minReturn` hesaplamasında da** kullanılıyor. Kontratın fee/curve sabitleri
+değiştiğinde bu dosya da mutlaka güncellenmeli.
+
 ## Genel
 - Her yeni bilgi/karar bu dosyaya veya ilgili akış/adım dosyasına eklenmeli;
   bu dosyalar projenin "hafızası"dır.
