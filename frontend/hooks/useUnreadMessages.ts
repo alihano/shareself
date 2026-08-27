@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAccount } from "wagmi";
 import { useQuery } from "@tanstack/react-query";
-import axios from "axios";
+import { apiClient } from "@/lib/api-client";
 import { getLastSeenMessagesAt } from "@/lib/read-state";
 
 /**
@@ -22,7 +22,7 @@ export function useUnreadMessages() {
   const query = useQuery({
     queryKey: ["messages-unread", address, lastSeen],
     queryFn: async () =>
-      (await axios.get<{ hasUnread: boolean }>(`/api/messages/unread/${address}`, { params: { since: lastSeen } }))
+      (await apiClient.get<{ hasUnread: boolean }>(`/api/messages/unread/${address}`, { params: { since: lastSeen } }))
         .data,
     enabled: Boolean(address),
     refetchInterval: 15_000,

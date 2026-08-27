@@ -67,24 +67,29 @@ interface ScanState {
   logs: Log[];
 }
 
-// Diagnostic logs pointed at a very specific symptom: 6 of 7 scans returned
-// in single-digit milliseconds ("no new blocks"), but the one scan whose
-// cached lastBlock was genuinely behind the chain tip hung indefinitely
-// trying to fetch that (tiny) delta — no error, no retry log, just silence
-// for minutes. That matches known flakiness in some RPC backends querying a
-// range that includes the last few not-yet-fully-propagated blocks. Staying
-// a small safety margin behind the tip avoids ever querying that bleeding
-// edge; those last few blocks just get picked up on the next call once
-// they're no longer the newest.
+// Found via production diagnostics: an eth_getLogs call querying a range
+// that includes the last few not-yet-fully-propagated blocks occasionally
+// never resolves or rejects at all on Arc's RPC. Staying a small safety
+// margin behind the tip avoids that bleeding edge entirely; those last few
+// blocks just get picked up on the next call once they're no longer newest.
 const SAFETY_MARGIN_BLOCKS = 5n;
+
+// A single /api/leaderboard call needs up to 7 of these scans (registered
+// users + holder-count/bought/sold for each token). Each used to call
+// getBlockNumber() independently — 7 separate round trips to a sometimes-
+// slow shared public RPC, each a chance to hit a slow one. Callers that
+// need multiple scans for one request (getLeaderboardFast, getTokenStatsFast)
+// fetch this once and pass it to every scan instead.
+export async function getSafeLatestBlock(): Promise<bigint> {
+  const chainTip = await publicClient.getBlockNumber();
+  return chainTip > SAFETY_MARGIN_BLOCKS ? chainTip - SAFETY_MARGIN_BLOCKS : chainTip;
+}
 
 async function scanEventsIncremental(
   stateKey: string,
+  latest: bigint,
   params: Omit<Parameters<typeof publicClient.getContractEvents>[0], "fromBlock" | "toBlock" | "blockHash">
 ): Promise<Log[]> {
-  const chainTip = await publicClient.getBlockNumber();
-  const latest = chainTip > SAFETY_MARGIN_BLOCKS ? chainTip - SAFETY_MARGIN_BLOCKS : chainTip;
-
   let lastBlock = DEPLOY_BLOCK - 1n;
   let logs: Log[] = [];
 
@@ -130,29 +135,30 @@ async function scanEventsIncremental(
   return allLogs;
 }
 
-export async function getAllRegisteredUsersFast(): Promise<RegisteredUser[]> {
-  const logs = await scanEventsIncremental("scan:registered-users", {
-    address: SOCIALFI_PLATFORM_ADDRESS,
-    abi: socialFiPlatformAbi,
-    eventName: "UserRegistered",
-  });
+export async function getAllRegisteredUsersFast(latest?: bigint): Promise<RegisteredUser[]> {
+  const l = latest ?? (await getSafeLatestBlock());
+  const logs = await scanEventsIncremental(
+    "scan:registered-users",
+    l,
+    { address: SOCIALFI_PLATFORM_ADDRESS, abi: socialFiPlatformAbi, eventName: "UserRegistered" }
+  );
   return mapRegisteredUserLogs(logs);
 }
 
-export async function getUsernameForAddressFast(address: Address): Promise<RegisteredUser | null> {
-  const users = await getAllRegisteredUsersFast();
+export async function getUsernameForAddressFast(address: Address, latest?: bigint): Promise<RegisteredUser | null> {
+  const users = await getAllRegisteredUsersFast(latest);
   return users.find((u) => u.address.toLowerCase() === address.toLowerCase()) ?? null;
 }
 
-async function getTradeEventsForTokenFast(token: Address) {
+async function getTradeEventsForTokenFast(token: Address, latest: bigint) {
   const [buyLogs, sellLogs] = await Promise.all([
-    scanEventsIncremental(`scan:trades-buy:${token.toLowerCase()}`, {
+    scanEventsIncremental(`scan:trades-buy:${token.toLowerCase()}`, latest, {
       address: SOCIALFI_PLATFORM_ADDRESS,
       abi: socialFiPlatformAbi,
       eventName: "TokensBought",
       args: { token },
     }),
-    scanEventsIncremental(`scan:trades-sell:${token.toLowerCase()}`, {
+    scanEventsIncremental(`scan:trades-sell:${token.toLowerCase()}`, latest, {
       address: SOCIALFI_PLATFORM_ADDRESS,
       abi: socialFiPlatformAbi,
       eventName: "TokensSold",
@@ -162,8 +168,8 @@ async function getTradeEventsForTokenFast(token: Address) {
   return mapTradeEventLogs(buyLogs, sellLogs);
 }
 
-async function getHolderCountFast(token: Address): Promise<number> {
-  const logs = await scanEventsIncremental(`scan:transfers:${token.toLowerCase()}`, {
+async function getHolderCountFast(token: Address, latest: bigint): Promise<number> {
+  const logs = await scanEventsIncremental(`scan:transfers:${token.toLowerCase()}`, latest, {
     address: token,
     abi: userTokenAbi,
     eventName: "Transfer",
@@ -171,11 +177,12 @@ async function getHolderCountFast(token: Address): Promise<number> {
   return countNonzeroHolders(token, candidateHoldersFromTransferLogs(logs));
 }
 
-export async function getTokenStatsFast(token: Address): Promise<TokenStats> {
+export async function getTokenStatsFast(token: Address, latest?: bigint): Promise<TokenStats> {
+  const l = latest ?? (await getSafeLatestBlock());
   const [totalSupply, holderCount, events] = await Promise.all([
     publicClient.readContract({ address: token, abi: userTokenAbi, functionName: "totalSupply" }) as Promise<bigint>,
-    getHolderCountFast(token),
-    getTradeEventsForTokenFast(token),
+    getHolderCountFast(token, l),
+    getTradeEventsForTokenFast(token, l),
   ]);
 
   const timestamps = await getBlockTimestamps(events.map((e) => e.blockNumber));
@@ -190,15 +197,17 @@ export async function getTokenStatsFast(token: Address): Promise<TokenStats> {
 }
 
 export async function getLeaderboardFast(): Promise<LeaderboardEntry[]> {
-  const users = await getAllRegisteredUsersFast();
-  const stats = await Promise.all(users.map((u) => getTokenStatsFast(u.token)));
+  const latest = await getSafeLatestBlock();
+  const users = await getAllRegisteredUsersFast(latest);
+  const stats = await Promise.all(users.map((u) => getTokenStatsFast(u.token, latest)));
   return users.map((user, i) => ({ ...user, stats: stats[i] }));
 }
 
 export async function getPriceHistoryFast(token: Address): Promise<PricePoint[]> {
+  const latest = await getSafeLatestBlock();
   const [currentSupply, events] = await Promise.all([
     publicClient.readContract({ address: token, abi: userTokenAbi, functionName: "totalSupply" }) as Promise<bigint>,
-    getTradeEventsForTokenFast(token),
+    getTradeEventsForTokenFast(token, latest),
   ]);
 
   const timestamps = await getBlockTimestamps(events.map((e) => e.blockNumber));

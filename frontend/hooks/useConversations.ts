@@ -2,7 +2,7 @@
 
 import { useAccount } from "wagmi";
 import { useQuery } from "@tanstack/react-query";
-import axios from "axios";
+import { apiClient } from "@/lib/api-client";
 import type { ConversationSummary } from "@/lib/messages-store";
 import { useMessageAuthToken } from "./useMessageAuthToken";
 
@@ -21,7 +21,7 @@ export function useConversations() {
     queryFn: async () => {
       const token = await getToken();
       if (!token) throw new Error("Wallet not connected");
-      const res = await axios.get<ConversationSummary[]>(`/api/messages/conversations/${address}`, {
+      const res = await apiClient.get<ConversationSummary[]>(`/api/messages/conversations/${address}`, {
         params: { timestamp: token.timestamp, signature: token.signature },
       });
       return res.data;

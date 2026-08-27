@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Address } from "viem";
 import { useAccount, useReadContract, useWriteContract } from "wagmi";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import axios from "axios";
+import { apiClient } from "@/lib/api-client";
 import { publicClient } from "@/lib/viem-client";
 import { DIRECT_MESSAGING_ADDRESS, USDC_ADDRESS, directMessagingAbi, erc20Abi } from "@/lib/contracts";
 import type { StoredMessage } from "@/lib/messages-store";
@@ -65,7 +65,7 @@ export function useMessaging(counterpart?: Address) {
       if (!self) throw new Error("Wallet not connected");
       const token = await getToken();
       if (!token) throw new Error("Wallet not connected");
-      const res = await axios.get<StoredMessage[]>(`/api/messages/${self}/${counterpart}`, {
+      const res = await apiClient.get<StoredMessage[]>(`/api/messages/${self}/${counterpart}`, {
         params: { as: self, timestamp: token.timestamp, signature: token.signature },
       });
       return res.data;
@@ -79,7 +79,7 @@ export function useMessaging(counterpart?: Address) {
       if (!self || !counterpart) throw new Error("Wallet not connected");
       const token = await getToken();
       if (!token) throw new Error("Wallet not connected");
-      await axios.post("/api/messages/send", {
+      await apiClient.post("/api/messages/send", {
         from: self,
         to: counterpart,
         text,

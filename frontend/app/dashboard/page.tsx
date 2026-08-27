@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useAccount } from "wagmi";
 import { useQuery } from "@tanstack/react-query";
-import axios from "axios";
+import { apiClient } from "@/lib/api-client";
 import toast from "react-hot-toast";
 import { useUserToken } from "@/hooks/useUserToken";
 import { useMessaging } from "@/hooks/useMessaging";
@@ -35,7 +35,7 @@ export default function DashboardPage() {
 
   const statsQuery = useQuery({
     queryKey: ["token-stats", token],
-    queryFn: async () => (await axios.get<TokenApiStats>(`/api/token/${token}`)).data,
+    queryFn: async () => (await apiClient.get<TokenApiStats>(`/api/token/${token}`)).data,
     enabled: Boolean(token),
     staleTime: 30_000,
   });

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import axios from "axios";
+import { apiClient } from "@/lib/api-client";
 import type { Address } from "viem";
 
 export type LeaderboardSort = "price" | "volume24h" | "newest" | "holders";
@@ -18,7 +18,7 @@ export function useLeaderboard(sortBy: LeaderboardSort = "price") {
   const query = useQuery({
     queryKey: ["leaderboard", sortBy],
     queryFn: async () => {
-      const res = await axios.get<LeaderboardRow[]>("/api/leaderboard", { params: { sortBy } });
+      const res = await apiClient.get<LeaderboardRow[]>("/api/leaderboard", { params: { sortBy } });
       return res.data;
     },
     staleTime: 30_000,

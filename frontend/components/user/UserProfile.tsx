@@ -4,7 +4,7 @@ import type { Address } from "viem";
 import { useAccount } from "wagmi";
 import { useSession } from "next-auth/react";
 import { useQuery } from "@tanstack/react-query";
-import axios from "axios";
+import { apiClient } from "@/lib/api-client";
 import { useUserToken } from "@/hooks/useUserToken";
 import { UserStats } from "./UserStats";
 import { PriceChart } from "@/components/trading/PriceChart";
@@ -28,7 +28,7 @@ export function UserProfile({ address, username }: { address: Address; username:
 
   const statsQuery = useQuery({
     queryKey: ["token-stats", token],
-    queryFn: async () => (await axios.get<TokenApiStats>(`/api/token/${token}`)).data,
+    queryFn: async () => (await apiClient.get<TokenApiStats>(`/api/token/${token}`)).data,
     enabled: Boolean(token),
     staleTime: 30_000,
   });
