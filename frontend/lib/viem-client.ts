@@ -3,21 +3,17 @@ import { arcTestnet } from "./arc-config";
 
 export const publicClient = createPublicClient({
   chain: arcTestnet,
-  // Arc's public RPC rate-limits eth_getLogs on concurrency (train.md).
-  // lib/rpc-throttle.ts serializes calls within one serverless invocation,
-  // but on Vercel each concurrent request can land on a separate function
-  // instance with its own independent throttle queue, so the *deployment*
-  // as a whole can still briefly exceed Arc's concurrency cap even though
-  // no single instance is issuing overlapping requests. Retrying here is
-  // what absorbs those cross-instance collisions instead of failing the
-  // request outright.
-  // Tried shortening retryDelay to 500ms to speed up the cold (cache-miss)
-  // scan — measured directly against the live deployment, it backfired: the
-  // retries fired too close together for Arc's rate limiter to recover
-  // between attempts, so the request failed outright (500) instead of
-  // eventually succeeding. 1500ms reliably completes (measured ~230s cold).
-  // Since the Redis cache (server-cache.ts, 180s TTL) means this expensive
-  // path only runs occasionally, reliability here matters more than shaving
-  // those seconds.
-  transport: http(undefined, { retryCount: 6, retryDelay: 1500 }),
+  // Arc's public RPC rate-limits eth_getLogs on concurrency (train.md), and
+  // occasionally a call near the chain tip hangs outright (see
+  // rpc-throttle.ts's hard timeout). Earlier this used a long retryCount x
+  // retryDelay (6 x 1500ms) to make a single cold, from-scratch scan
+  // reliably succeed even if slow — but onchain-data-fast.ts's incremental
+  // scan (see its comment) changed the calculus: a scan that fails now just
+  // leaves its Redis cursor where it was and picks up the same unfetched
+  // range on the *next* request, instead of needing to succeed in one shot.
+  // So a long retry chain here no longer buys reliability, it just adds
+  // dead time (worst case 6 x ~11.5s = ~70s) to whichever user's request
+  // happens to hit a slow moment. Failing fast and letting the next request
+  // retry is strictly better now.
+  transport: http(undefined, { retryCount: 1, retryDelay: 300 }),
 });

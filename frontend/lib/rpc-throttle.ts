@@ -16,7 +16,15 @@ const MIN_GAP_MS = 350;
 // and hangs forever too, forever, even for completely unrelated requests.
 // Racing every call against a hard deadline guarantees `result` always
 // settles (as a rejection, worst case), so the queue can never get wedged.
-const CALL_TIMEOUT_MS = 15_000;
+//
+// Kept short on purpose: onchain-data-fast.ts's incremental scan degrades
+// gracefully on a failed chunk (leaves its Redis cursor where it was, picks
+// up the same range next request) rather than needing this call to succeed
+// right now. A single request needing several fresh chunks would otherwise
+// pay this ceiling multiple times in a row — short-and-fail-fast beats
+// long-and-eventually-succeed once failure just means "try again next time"
+// instead of "the whole page has no data".
+const CALL_TIMEOUT_MS = 6_000;
 
 function withHardTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
