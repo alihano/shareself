@@ -150,6 +150,11 @@ export async function getUsernameForAddressFast(address: Address, latest?: bigin
   return users.find((u) => u.address.toLowerCase() === address.toLowerCase()) ?? null;
 }
 
+export async function getUserByUsernameFast(username: string, latest?: bigint): Promise<RegisteredUser | null> {
+  const users = await getAllRegisteredUsersFast(latest);
+  return users.find((u) => u.username.toLowerCase() === username.toLowerCase()) ?? null;
+}
+
 async function getTradeEventsForTokenFast(token: Address, latest: bigint) {
   const [buyLogs, sellLogs] = await Promise.all([
     scanEventsIncremental(`scan:trades-buy:${token.toLowerCase()}`, latest, {
